@@ -1,0 +1,9 @@
+[
+  {
+    "targets": ["https://example.com"],
+    "labels": {
+      "service": "example",
+      "environment": "demo"
+    }
+  }
+]

@@ -1,0 +1,67 @@
+groups:
+  - name: infrastructure
+    rules:
+      - alert: HighCpuUsage
+        expr: 1 - avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) > 0.85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "CPU usage is above 85% on {{ $labels.instance }}"
+          description: "CPU has remained above 85% for five minutes. Check recent workload and top processes."
+
+      - alert: HighMemoryUsage
+        expr: 1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) > 0.90
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Memory usage is above 90% on {{ $labels.instance }}"
+          description: "Review memory-heavy processes and recent workload changes."
+
+      - alert: LowDiskSpace
+        expr: (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay"}) < 0.10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Disk space is below 10% on {{ $labels.instance }}"
+          description: "Review filesystem usage and available cleanup options."
+
+      - alert: EndpointUnavailable
+        expr: probe_success == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Endpoint probe failed for {{ $labels.instance }}"
+          description: "Check endpoint reachability, DNS, TLS, and the configured probe module."
+
+      - alert: EndpointLatencyHigh
+        expr: probe_duration_seconds > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Endpoint latency is above two seconds for {{ $labels.instance }}"
+          description: "Compare endpoint latency with its baseline and investigate the slow network path."
+
+      - alert: MonitoringTargetUnavailable
+        expr: up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Monitoring target {{ $labels.job }} is unavailable"
+          description: "Check the target container, service name, network, and exporter logs."
+          runbook: "docs/runbook.md#monitoring-target-unavailable"
+
+      - alert: AnomalyFindingDetected
+        expr: increase(cloudnetops_anomaly_findings_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "CloudNetOps-AI recorded an anomaly finding"
+          description: "Review the detector, severity, and observed metrics in the application anomaly history."
+          runbook: "docs/runbook.md#anomaly-finding"

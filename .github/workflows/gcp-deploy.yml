@@ -1,0 +1,51 @@
+name: Optional GCP deployment
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: gcp-staging-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Authenticate with Workload Identity Federation
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+
+      - name: Deploy reviewed main branch to the existing VM
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          GCE_ZONE: ${{ vars.GCE_ZONE }}
+          GCE_INSTANCE: ${{ vars.GCE_INSTANCE }}
+        run: |
+          set -euo pipefail
+          for name in GCP_PROJECT_ID GCE_ZONE GCE_INSTANCE; do
+            if [ -z "${!name}" ]; then
+              echo "Required GitHub Environment variable $name is not configured." >&2
+              exit 1
+            fi
+          done
+          gcloud compute ssh "$GCE_INSTANCE" \
+            --project="$GCP_PROJECT_ID" \
+            --zone="$GCE_ZONE" \
+            --tunnel-through-iap \
+            --command='cd /opt/cloudnetops-ai && git pull --ff-only origin main && docker compose up -d --build && curl --fail --retry 5 --retry-delay 3 http://127.0.0.1:8000/health'

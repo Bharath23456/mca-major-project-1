@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#101827">
+    <title>CloudNetOps-AI | Infrastructure overview</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="CloudNetOps-AI home">
+        <span class="brand-mark" aria-hidden="true">CN</span>
+        <span>CloudNetOps<span class="brand-accent">-AI</span></span>
+      </a>
+      <div class="topbar-actions">
+        <span id="service-status" class="status-chip status-unknown">Connecting</span>
+        <button id="refresh-button" class="button" type="button">Refresh</button>
+      </div>
+    </header>
+
+    <main class="page">
+      <section class="page-heading">
+        <div>
+          <p class="eyebrow">INFRASTRUCTURE OBSERVABILITY</p>
+          <h1>System overview</h1>
+          <p class="muted">Live values come from Prometheus. Missing or delayed samples are shown explicitly.</p>
+        </div>
+        <p id="last-updated" class="last-updated">Waiting for first refresh</p>
+      </section>
+
+      <section class="metric-grid" id="metric-grid" aria-label="Current infrastructure metrics"></section>
+
+      <section class="panel">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">HISTORY</p>
+            <h2>CPU utilization</h2>
+          </div>
+          <span class="unit-label">percent · Prometheus range query</span>
+        </div>
+        <div class="chart-wrap">
+          <canvas id="cpu-chart" aria-label="CPU utilization trend"></canvas>
+          <p id="chart-message" class="chart-message">Loading time series…</p>
+        </div>
+      </section>
+
+      <div class="two-column">
+        <section class="panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">BLACKBOX EXPORTER</p>
+              <h2>Configured endpoints</h2>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Endpoint</th><th>Availability</th><th>Latency</th><th>HTTP status</th><th>Sample time</th></tr></thead>
+              <tbody id="endpoint-rows"><tr><td colspan="3" class="empty">Waiting for telemetry</td></tr></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">PROMETHEUS</p>
+              <h2>Monitoring targets</h2>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Job</th><th>Target</th><th>Status</th><th>Sample time</th></tr></thead>
+              <tbody id="target-rows"><tr><td colspan="3" class="empty">Waiting for telemetry</td></tr></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+
+      <div class="two-column">
+        <section class="panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">ALERTMANAGER</p>
+              <h2>Recent alerts</h2>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Alert</th><th>Severity</th><th>Status</th><th>Updated</th></tr></thead>
+              <tbody id="alert-rows"><tr><td colspan="4" class="empty">No alert history received</td></tr></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">DETECTION</p>
+              <h2>Recent anomaly events</h2>
+            </div>
+            <div class="topbar-actions">
+              <span id="model-status" class="unit-label">Checking model…</span>
+              <button id="scan-button" class="button" type="button">Analyze current metrics</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Time</th><th>Detector</th><th>Severity</th><th>Finding</th></tr></thead>
+              <tbody id="anomaly-rows"><tr><td colspan="4" class="empty">No anomaly history recorded</td></tr></tbody>
+            </table>
+          </div>
+          <p class="footnote">An anomaly is a signal for investigation, not a confirmed incident.</p>
+        </section>
+      </div>
+
+      <p id="page-error" class="page-error" role="status" hidden></p>
+      <footer>
+        <span>CloudNetOps-AI · Student-scale monitoring demonstration</span>
+        <span>Refresh interval: 30 seconds · Times displayed in local time</span>
+      </footer>
+    </main>
+    <script src="/static/dashboard.js" defer></script>
+  </body>
+</html>
