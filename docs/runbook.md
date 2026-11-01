@@ -5,7 +5,9 @@ incident-response procedure.
 
 ## Start, verify, and stop
 
-1. Copy `.env.example` to `.env` and set a unique Grafana password.
+1. Copy `.env.example` to `.env` and set a unique Grafana password. Generate
+   the ignored `secrets/alertmanager-webhook-token` as described in
+   [setup.md](setup.md); Compose will not start without it.
 2. Start the stack and wait for health checks:
 
    ```powershell
@@ -13,7 +15,13 @@ incident-response procedure.
    docker compose ps --all
    ```
 
-3. Check health and telemetry:
+3. Bootstrap the initial app administrator if this is a new installation:
+
+   ```powershell
+   docker compose exec app python -m app.auth_setup
+   ```
+
+4. Check health and telemetry:
 
    ```powershell
    Invoke-RestMethod http://127.0.0.1:8000/health/live
@@ -22,10 +30,10 @@ incident-response procedure.
    Invoke-RestMethod http://127.0.0.1:8000/api/v1/targets
    ```
 
-4. Open the dashboard `http://127.0.0.1:8000/`, Grafana
+5. Open the dashboard `http://127.0.0.1:8000/`, Grafana
    `http://127.0.0.1:3000/`, Prometheus `http://127.0.0.1:9090/`, or
    Alertmanager `http://127.0.0.1:9093/`. All are loopback-only.
-5. Stop without deleting history:
+6. Stop without deleting history:
 
    ```powershell
    docker compose down

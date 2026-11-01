@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#101827">
-    <title>CloudNetOps-AI | Infrastructure overview</title>
+    <title>CloudNetOps-AI | Operations dashboard</title>
     <link rel="stylesheet" href="/static/styles.css">
   </head>
   <body>
@@ -14,112 +14,121 @@
         <span>CloudNetOps<span class="brand-accent">-AI</span></span>
       </a>
       <div class="topbar-actions">
+        <span id="user-info" class="unit-label"></span>
         <span id="service-status" class="status-chip status-unknown">Connecting</span>
         <button id="refresh-button" class="button" type="button">Refresh</button>
+        <button id="logout-button" class="button" type="button">Sign out</button>
       </div>
     </header>
 
-    <main class="page">
-      <section class="page-heading">
-        <div>
-          <p class="eyebrow">INFRASTRUCTURE OBSERVABILITY</p>
-          <h1>System overview</h1>
-          <p class="muted">Live values come from Prometheus. Missing or delayed samples are shown explicitly.</p>
-        </div>
-        <p id="last-updated" class="last-updated">Waiting for first refresh</p>
-      </section>
+    <div class="dashboard-shell">
+      <aside class="sidebar">
+        <p class="eyebrow">OPERATIONS</p>
+        <nav id="primary-nav" aria-label="Dashboard sections"></nav>
+        <div class="sidebar-footer">Local-first · Read-only monitoring</div>
+      </aside>
 
-      <section class="metric-grid" id="metric-grid" aria-label="Current infrastructure metrics"></section>
-
-      <section class="panel">
-        <div class="panel-heading">
-          <div>
-            <p class="eyebrow">HISTORY</p>
-            <h2>CPU utilization</h2>
-          </div>
-          <span class="unit-label">percent · Prometheus range query</span>
-        </div>
-        <div class="chart-wrap">
-          <canvas id="cpu-chart" aria-label="CPU utilization trend"></canvas>
-          <p id="chart-message" class="chart-message">Loading time series…</p>
-        </div>
-      </section>
-
-      <div class="two-column">
-        <section class="panel">
-          <div class="panel-heading">
+      <main class="page">
+        <section class="page-view" data-view="overview">
+          <section class="page-heading">
             <div>
-              <p class="eyebrow">BLACKBOX EXPORTER</p>
-              <h2>Configured endpoints</h2>
+              <p class="eyebrow">INFRASTRUCTURE OBSERVABILITY</p>
+              <h1>System overview</h1>
+              <p class="muted">Live values come from Prometheus; missing or delayed samples remain explicit.</p>
             </div>
+            <p id="last-updated" class="last-updated">Waiting for first refresh</p>
+          </section>
+          <section class="metric-grid" id="overview-cards" aria-label="Current infrastructure metrics"></section>
+          <div class="two-column">
+            <section class="panel">
+              <div class="panel-heading">
+                <div><p class="eyebrow">PROMETHEUS · LAST 6 HOURS</p><h2>CPU utilization</h2></div>
+                <span class="unit-label">percent</span>
+              </div>
+              <div class="chart-wrap"><canvas id="overview-cpu-chart" aria-label="CPU utilization trend"></canvas><p id="overview-chart-message" class="chart-message">Loading time series…</p></div>
+            </section>
+            <section class="panel">
+              <div class="panel-heading">
+                <div><p class="eyebrow">AI OPS</p><h2>Diagnostic suggestions</h2></div>
+              </div>
+              <div id="overview-diagnostics" class="suggestion-list"><p class="empty">Loading evidence…</p></div>
+            </section>
           </div>
-          <div class="table-wrap">
-            <table>
-              <thead><tr><th>Endpoint</th><th>Availability</th><th>Latency</th><th>HTTP status</th><th>Sample time</th></tr></thead>
-              <tbody id="endpoint-rows"><tr><td colspan="3" class="empty">Waiting for telemetry</td></tr></tbody>
-            </table>
+          <div class="two-column">
+            <section class="panel">
+              <div class="panel-heading"><div><p class="eyebrow">ALERTMANAGER</p><h2>Recent alerts</h2></div></div>
+              <div class="table-wrap"><table><thead><tr><th>Alert</th><th>Severity</th><th>Status</th><th>Updated</th></tr></thead><tbody id="overview-alert-rows"><tr><td colspan="4" class="empty">Loading…</td></tr></tbody></table></div>
+            </section>
+            <section class="panel">
+              <div class="panel-heading"><div><p class="eyebrow">DETECTION</p><h2>Recent anomalies</h2></div></div>
+              <div class="table-wrap"><table><thead><tr><th>Time</th><th>Source</th><th>Severity</th><th>Evidence</th></tr></thead><tbody id="overview-anomaly-rows"><tr><td colspan="4" class="empty">Loading…</td></tr></tbody></table></div>
+            </section>
           </div>
+          <section class="panel">
+            <div class="panel-heading"><div><p class="eyebrow">INCIDENT MANAGEMENT</p><h2>Open incidents</h2></div><a class="text-link" href="#/incidents">View incidents</a></div>
+            <div class="table-wrap"><table><thead><tr><th>ID</th><th>Incident</th><th>Severity</th><th>Target</th><th>Status</th><th>Updated</th></tr></thead><tbody id="overview-incident-rows"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody></table></div>
+          </section>
         </section>
 
-        <section class="panel">
-          <div class="panel-heading">
-            <div>
-              <p class="eyebrow">PROMETHEUS</p>
-              <h2>Monitoring targets</h2>
-            </div>
+        <section class="page-view" data-view="infrastructure" hidden>
+          <div class="page-heading"><div><p class="eyebrow">PROMETHEUS TELEMETRY</p><h1>Infrastructure</h1><p class="muted">Current host utilization and recent trends.</p></div></div>
+          <section id="infrastructure-cards" class="metric-grid"></section>
+          <div class="chart-grid">
+            <section class="panel"><div class="panel-heading"><h2>CPU utilization</h2><span class="unit-label">percent</span></div><div class="chart-wrap"><canvas id="chart-cpu"></canvas><p class="chart-message"></p></div></section>
+            <section class="panel"><div class="panel-heading"><h2>Memory utilization</h2><span class="unit-label">percent</span></div><div class="chart-wrap"><canvas id="chart-memory"></canvas><p class="chart-message"></p></div></section>
+            <section class="panel"><div class="panel-heading"><h2>Disk utilization</h2><span class="unit-label">percent</span></div><div class="chart-wrap"><canvas id="chart-disk"></canvas><p class="chart-message"></p></div></section>
           </div>
-          <div class="table-wrap">
-            <table>
-              <thead><tr><th>Job</th><th>Target</th><th>Status</th><th>Sample time</th></tr></thead>
-              <tbody id="target-rows"><tr><td colspan="3" class="empty">Waiting for telemetry</td></tr></tbody>
-            </table>
-          </div>
-        </section>
-      </div>
-
-      <div class="two-column">
-        <section class="panel">
-          <div class="panel-heading">
-            <div>
-              <p class="eyebrow">ALERTMANAGER</p>
-              <h2>Recent alerts</h2>
-            </div>
-          </div>
-          <div class="table-wrap">
-            <table>
-              <thead><tr><th>Alert</th><th>Severity</th><th>Status</th><th>Updated</th></tr></thead>
-              <tbody id="alert-rows"><tr><td colspan="4" class="empty">No alert history received</td></tr></tbody>
-            </table>
-          </div>
+          <section class="panel"><div class="panel-heading"><div><p class="eyebrow">TARGET HEALTH</p><h2>Scrape targets</h2></div></div><div class="table-wrap"><table><thead><tr><th>Job</th><th>Target</th><th>Status</th><th>Sample time</th></tr></thead><tbody id="infrastructure-target-rows"></tbody></table></div></section>
         </section>
 
-        <section class="panel">
-          <div class="panel-heading">
-            <div>
-              <p class="eyebrow">DETECTION</p>
-              <h2>Recent anomaly events</h2>
-            </div>
-            <div class="topbar-actions">
-              <span id="model-status" class="unit-label">Checking model…</span>
-              <button id="scan-button" class="button" type="button">Analyze current metrics</button>
-            </div>
+        <section class="page-view" data-view="network" hidden>
+          <div class="page-heading"><div><p class="eyebrow">NETWORK AND PROBES</p><h1>Network monitoring</h1><p class="muted">Traffic and HTTP probe data sourced from Prometheus.</p></div></div>
+          <section id="network-cards" class="metric-grid"></section>
+          <div class="two-column">
+            <section class="panel"><div class="panel-heading"><h2>Receive rate</h2><span class="unit-label">bytes/second</span></div><div class="chart-wrap"><canvas id="chart-receive"></canvas><p class="chart-message"></p></div></section>
+            <section class="panel"><div class="panel-heading"><h2>Transmit rate</h2><span class="unit-label">bytes/second</span></div><div class="chart-wrap"><canvas id="chart-transmit"></canvas><p class="chart-message"></p></div></section>
           </div>
-          <div class="table-wrap">
-            <table>
-              <thead><tr><th>Time</th><th>Detector</th><th>Severity</th><th>Finding</th></tr></thead>
-              <tbody id="anomaly-rows"><tr><td colspan="4" class="empty">No anomaly history recorded</td></tr></tbody>
-            </table>
-          </div>
-          <p class="footnote">An anomaly is a signal for investigation, not a confirmed incident.</p>
+          <section class="panel"><div class="panel-heading"><div><p class="eyebrow">BLACKBOX EXPORTER</p><h2>Endpoint availability</h2></div></div><div class="table-wrap"><table><thead><tr><th>Endpoint</th><th>Availability</th><th>Latency</th><th>HTTP status</th><th>Sample time</th></tr></thead><tbody id="network-endpoint-rows"></tbody></table></div></section>
         </section>
-      </div>
 
-      <p id="page-error" class="page-error" role="status" hidden></p>
-      <footer>
-        <span>CloudNetOps-AI · Student-scale monitoring demonstration</span>
-        <span>Refresh interval: 30 seconds · Times displayed in local time</span>
-      </footer>
-    </main>
+        <section class="page-view" data-view="anomalies" hidden>
+          <div class="page-heading"><div><p class="eyebrow">HYBRID DETECTION</p><h1>Anomalies and diagnostics</h1><p class="muted">Threshold rules and Isolation Forest findings are identified separately.</p></div><button id="scan-button" class="button" type="button">Analyze current metrics</button></div>
+          <section class="panel"><div class="panel-heading"><div><p class="eyebrow">MODEL STATUS</p><h2 id="anomaly-model-summary">Loading…</h2></div></div><p id="anomaly-model-note" class="muted"></p></section>
+          <section class="panel"><div class="panel-heading"><div><p class="eyebrow">EVIDENCE</p><h2>Probable-cause suggestions</h2></div></div><div id="diagnostic-list" class="suggestion-list"></div></section>
+          <section class="panel"><div class="panel-heading"><div><p class="eyebrow">EVENT HISTORY</p><h2>Detected anomalies</h2></div><input id="anomaly-search" class="search-input" type="search" placeholder="Filter source, target or text" aria-label="Filter anomalies"></div><div class="table-wrap"><table><thead><tr><th>Time</th><th>Source</th><th>Severity</th><th>Target</th><th>Score</th><th>Explanation and metric evidence</th></tr></thead><tbody id="anomaly-rows"></tbody></table></div></section>
+        </section>
+
+        <section class="page-view" data-view="incidents" hidden>
+          <div class="page-heading"><div><p class="eyebrow">OPERATIONS WORKFLOW</p><h1>Incident management</h1><p class="muted">Related alerts/anomalies are grouped for investigation; no automatic remediation is performed.</p></div></div>
+          <section class="panel"><div class="panel-heading"><h2>Incidents</h2><select id="incident-status-filter" class="search-input" aria-label="Filter incident status"><option value="">All statuses</option><option>OPEN</option><option>ACKNOWLEDGED</option><option>RESOLVED</option></select></div><div class="table-wrap"><table><thead><tr><th>ID</th><th>Incident</th><th>Severity</th><th>Target</th><th>Related events</th><th>First detected</th><th>Updated</th><th>Status</th><th>Assigned operator</th><th>Actions</th></tr></thead><tbody id="incident-rows"></tbody></table></div></section>
+          <section id="incident-detail" class="panel" hidden><div class="panel-heading"><div><p class="eyebrow">INCIDENT DETAILS</p><h2 id="incident-detail-title"></h2></div><button id="incident-close" class="button" type="button">Close</button></div><div id="incident-detail-content"></div></section>
+        </section>
+
+        <section class="page-view" data-view="alerts" hidden>
+          <div class="page-heading"><div><p class="eyebrow">ALERTMANAGER</p><h1>Alert history</h1><p class="muted">Alerts received from the private Alertmanager integration.</p></div></div>
+          <section class="panel"><div class="panel-heading"><h2>Alerts</h2><input id="alert-search" class="search-input" type="search" placeholder="Filter name, target or status" aria-label="Filter alerts"></div><div class="table-wrap"><table><thead><tr><th>Alert</th><th>Severity</th><th>Status</th><th>Target</th><th>Summary</th><th>Starts</th><th>Updated</th></tr></thead><tbody id="alert-rows"></tbody></table></div></section>
+        </section>
+
+        <section class="page-view" data-view="model" hidden>
+          <div class="page-heading"><div><p class="eyebrow">AIOPS MODEL</p><h1>Model status</h1><p class="muted">Availability and artifact metadata only; no fabricated accuracy metrics.</p></div></div>
+          <section id="model-details" class="model-grid"></section>
+        </section>
+
+        <section class="page-view" data-view="users" hidden>
+          <div class="page-heading"><div><p class="eyebrow">ACCESS CONTROL</p><h1>User management</h1><p class="muted">Create accounts, assign roles, and deactivate access.</p></div></div>
+          <section class="panel"><div class="panel-heading"><h2>Create user</h2></div><form id="user-create-form" class="form-grid"><label>Username<input name="username" minlength="3" maxlength="64" required></label><label>Email<input name="email" type="email" maxlength="254" required></label><label>Temporary password<input name="password" type="password" minlength="12" maxlength="128" autocomplete="new-password" required></label><label>Role<select name="role"><option>VIEWER</option><option>OPERATOR</option><option>ADMIN</option></select></label><button class="button" type="submit">Create user</button><p id="user-create-message" class="form-message" role="status"></p></form></section>
+          <section class="panel"><div class="panel-heading"><h2>Accounts</h2><input id="user-search" class="search-input" type="search" placeholder="Filter users" aria-label="Filter users"></div><div class="table-wrap"><table><thead><tr><th>User</th><th>Email</th><th>Role</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead><tbody id="user-rows"></tbody></table></div></section>
+        </section>
+
+        <section class="page-view" data-view="audit" hidden>
+          <div class="page-heading"><div><p class="eyebrow">GOVERNANCE</p><h1>Audit history</h1><p class="muted">Security-sensitive actions and their outcomes; secrets are excluded.</p></div></div>
+          <section class="panel"><div class="panel-heading"><h2>Audit events</h2><div class="filter-row"><input id="audit-search" class="search-input" type="search" placeholder="Filter action/resource" aria-label="Filter audit events"><select id="audit-action-filter" class="search-input" aria-label="Filter by action"><option value="">All actions</option><option value="login_succeeded">Sign in</option><option value="login_failed">Failed sign in</option><option value="logout">Sign out</option><option value="user_create">User created</option><option value="user_role_update">Role changed</option><option value="user_status_update">User status changed</option></select></div></div><div class="table-wrap"><table><thead><tr><th>Time</th><th>User ID</th><th>Action</th><th>Resource</th><th>Result</th><th>Details</th></tr></thead><tbody id="audit-rows"></tbody></table></div></section>
+        </section>
+
+        <p id="page-error" class="page-error" role="status" hidden></p>
+        <footer><span>CloudNetOps-AI · Student-scale monitoring demonstration</span><span>Times displayed in local time · Missing telemetry is not zero</span></footer>
+      </main>
+    </div>
     <script src="/static/dashboard.js" defer></script>
   </body>
 </html>

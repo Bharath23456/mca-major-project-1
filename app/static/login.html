@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#101827">
+    <title>Sign in | CloudNetOps-AI</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body class="login-page">
+    <main class="login-shell">
+      <a class="brand login-brand" href="/login" aria-label="CloudNetOps-AI sign in">
+        <span class="brand-mark" aria-hidden="true">CN</span>
+        <span>CloudNetOps<span class="brand-accent">-AI</span></span>
+      </a>
+      <section class="login-panel">
+        <p class="eyebrow">SECURE OPERATOR ACCESS</p>
+        <h1>Welcome back</h1>
+        <p class="muted">Sign in to view your infrastructure and AIOps workspace.</p>
+        <form id="login-form">
+          <label for="username">Username or email</label>
+          <input id="username" name="username" type="text" autocomplete="username"
+                 required maxlength="254" autofocus>
+          <label for="password">Password</label>
+          <input id="password" name="password" type="password" autocomplete="current-password"
+                 required maxlength="128">
+          <p id="login-error" class="page-error" role="alert" hidden></p>
+          <button id="login-button" class="button login-button" type="submit">Sign in</button>
+        </form>
+        <p id="login-error" class="page-error" role="alert" hidden></p>
+        <p id="registration-message" class="page-success" role="status" hidden></p>
+        <p class="auth-switch">New here? <button id="show-register" class="text-button" type="button">Create a viewer account</button></p>
+        <form id="register-form" hidden>
+          <label for="register-username">Username</label>
+          <input id="register-username" name="username" type="text" autocomplete="username"
+                 required minlength="3" maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9_.-]{2,63}">
+          <label for="register-email">Email</label>
+          <input id="register-email" name="email" type="email" autocomplete="email"
+                 required maxlength="254">
+          <label for="register-password">Password</label>
+          <input id="register-password" name="password" type="password" autocomplete="new-password"
+                 required minlength="12" maxlength="128">
+          <label for="confirm-password">Confirm password</label>
+          <input id="confirm-password" name="confirm_password" type="password" autocomplete="new-password"
+                 required minlength="12" maxlength="128">
+          <p id="register-error" class="page-error" role="alert" hidden></p>
+          <button id="register-button" class="button login-button" type="submit">Create account</button>
+        </form>
+        <p id="register-switch" class="auth-switch" hidden>Already registered? <button id="show-login" class="text-button" type="button">Sign in</button></p>
+        <p class="footnote">Self-registration creates a read-only VIEWER account. Ask an administrator for elevated access.</p>
+      </section>
+      <footer>CloudNetOps-AI · Local-first infrastructure monitoring</footer>
+    </main>
+    <script src="/static/login.js" defer></script>
+  </body>
+</html>

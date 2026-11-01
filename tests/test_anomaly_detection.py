@@ -3,6 +3,7 @@ import pytest
 
 from app.anomaly_detection.core import (
     FEATURES,
+    detect_hybrid_metrics,
     detect_metrics,
     evaluate_model,
     load_model,
@@ -76,3 +77,28 @@ def test_detection_rejects_out_of_range_percentages() -> None:
 
     with pytest.raises(ValueError, match="between 0 and 100"):
         detect_metrics(invalid)
+
+
+class AlwaysAnomalousModel:
+    def predict(self, _) -> np.ndarray:
+        return np.array([-1])
+
+    def decision_function(self, _) -> np.ndarray:
+        return np.array([-0.75])
+
+
+def test_hybrid_detector_keeps_rule_and_isolation_forest_findings_separate() -> None:
+    sample = dict(zip(FEATURES, [96, 95, 75, 1200, 800], strict=True))
+
+    findings = detect_hybrid_metrics(sample, AlwaysAnomalousModel())
+
+    assert [finding.detector for finding in findings] == ["rule", "isolation_forest"]
+    assert findings[0].severity == "critical"
+    assert findings[1].severity == "warning"
+    assert findings[1].score == 0.75
+
+
+def test_missing_model_does_not_create_a_normal_or_forest_finding() -> None:
+    normal = dict(zip(FEATURES, [20, 40, 50, 100, 100], strict=True))
+
+    assert detect_hybrid_metrics(normal, model=None) == []

@@ -93,28 +93,40 @@ cd /opt/cloudnetops-ai
 if [ ! -f .env ]; then cp .env.example .env; fi
 nano .env
 chmod 600 .env
+install -d -m 700 secrets
+if [ ! -f secrets/alertmanager-webhook-token ]; then
+  umask 077
+  openssl rand -base64 32 > secrets/alertmanager-webhook-token
+fi
+sudo chown root:10001 secrets/alertmanager-webhook-token
+sudo chmod 0440 secrets/alertmanager-webhook-token
 docker compose up --build -d --wait --wait-timeout 180
 docker compose ps
 curl --fail http://127.0.0.1:8000/health
+docker compose exec app python -m app.auth_setup
 ```
 
-Set a unique Grafana password in `.env` and do not copy any real credentials
-into Git. The Compose ports stay bound to the VM's loopback interface.
+Set a unique Grafana password in `.env`, keep the generated webhook token in
+the ignored `secrets/` directory, and do not copy credentials into Git. The
+token is root-owned and readable only by the app/Alertmanager group (GID
+10001). The Compose ports stay bound to the VM's loopback interface. The
+bootstrap command prompts for the first application administrator; there is
+no seeded account.
 
 ## HTTPS and administration
 
 Use a maintained reverse proxy such as Nginx or Caddy with a DNS name and
-valid TLS certificate. This application has no built-in user accounts; protect
-the dashboard and all API/docs paths with IAP, VPN, or reverse-proxy
-authentication. A Basic Auth Nginx starting point is in
+valid TLS certificate. The dashboard has application authentication and
+backend role enforcement; also protect remote administrative access with IAP
+or a VPN. A Basic Auth Nginx starting point is in
 `scripts/nginx-cloudnetops.conf`; install `nginx` and `apache2-utils`, replace
 `YOUR_DOMAIN`, obtain certificates, and generate a password file with
 `sudo htpasswd -cB /etc/nginx/cloudnetops.htpasswd USERNAME` before enabling
 the site. Review the proxy configuration and firewall before opening 80/443. Do not proxy
-`/api/v1/alerts/webhook`; Alertmanager calls it over the private Compose
-network. Keep Grafana, Prometheus, and Alertmanager on loopback and access
-them through IAP, VPN, or an SSH tunnel. Restrict HTTP-to-HTTPS and firewall
-rules to the services actually used.
+`/api/v1/alerts/webhook`; its bearer-token integration is intended for the
+private Compose network. Keep Grafana, Prometheus, and Alertmanager on loopback
+and access them through IAP, VPN, or an SSH tunnel. Restrict HTTP-to-HTTPS and
+firewall rules to the services actually used.
 
 ## CI deployment and IAM
 

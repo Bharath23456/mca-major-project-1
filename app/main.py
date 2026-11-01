@@ -1,14 +1,15 @@
+import hmac
 import json
 import math
 import pickle
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
-from fastapi import Depends, FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from prometheus_client import (
     CONTENT_TYPE_LATEST,
@@ -18,15 +19,36 @@ from prometheus_client import (
     generate_latest,
 )
 from pydantic import BaseModel, Field, ValidationError
-from sqlalchemy import desc, select, text
+from sqlalchemy import desc, func, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.anomaly_detection.core import Detection, detect_metrics, load_model
+from app.admin_routes import router as admin_router
+from app.aiops import build_diagnostics, build_historical_analysis, build_overview
+from app.anomaly_detection.core import (
+    FEATURES,
+    Detection,
+    detect_hybrid_metrics,
+    detect_metrics,
+    load_model,
+)
+from app.auth import (
+    CSRF_COOKIE_NAME,
+    CSRF_HEADER_NAME,
+    SESSION_COOKIE_NAME,
+    csrf_token_is_valid,
+    require_roles,
+    session_is_expired,
+    user_session_for_token,
+)
+from app.auth_routes import router as auth_router
 from app.configuration import validate_probe_targets
-from app.database import engine, get_session
+from app.database import SessionLocal, engine, get_session
+from app.database_migrations import migrate_database
+from app.incident_routes import router as incident_router
+from app.incidents import correlate_alert_event, create_incident_from_anomaly
 from app.logging_config import get_json_logger
-from app.models import AlertEvent, AnomalyEvent, Base
+from app.models import AlertEvent, AnomalyEvent, Incident, IncidentEvent, User
 from app.prometheus import (
     PrometheusUnavailable,
 )
@@ -57,6 +79,7 @@ ANOMALY_FINDINGS = Counter(
     labelnames=("detector", "severity"),
     registry=registry,
 )
+MODEL_LAST_INFERENCE: dict[str, Any] = {"status": "not_run", "timestamp": None}
 
 METRIC_QUERIES = {
     "cpu_percent": ('100 * (1 - avg(rate(node_cpu_seconds_total{mode="idle"}[5m])))'),
@@ -120,7 +143,7 @@ class AlertManagerPayload(BaseModel):
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    Base.metadata.create_all(bind=engine)
+    migrate_database()
     yield
 
 
@@ -132,11 +155,79 @@ app = FastAPI(
 )
 STATIC_DIR = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+app.include_router(auth_router)
+app.include_router(admin_router)
+app.include_router(incident_router)
+
+
+@app.middleware("http")
+async def authenticate_request(request: Request, call_next):
+    path = request.url.path
+    public = (
+        path == "/health"
+        or path.startswith("/health/")
+        or path == "/metrics"
+        or path.startswith("/static/")
+        or path == "/login"
+        or path == "/api/auth/login"
+        or path == "/api/auth/register"
+        or path == "/api/v1/alerts/webhook"
+    )
+    request.state.user = None
+    request.state.auth_session = None
+    if public:
+        return await call_next(request)
+
+    token = request.cookies.get(SESSION_COOKIE_NAME)
+    user = None
+    auth_session = None
+    if token:
+        with SessionLocal() as session:
+            auth_session = user_session_for_token(session, token)
+            if auth_session is not None:
+                if session_is_expired(auth_session):
+                    session.delete(auth_session)
+                    session.commit()
+                    auth_session = None
+                else:
+                    user = session.get(User, auth_session.user_id)
+                    if user is None or not user.is_active:
+                        session.delete(auth_session)
+                        session.commit()
+                        auth_session = None
+                        user = None
+
+    if user is None or auth_session is None:
+        if path.startswith("/api/"):
+            return JSONResponse(status_code=401, content={"detail": "Authentication required."})
+        return RedirectResponse("/login", status_code=303)
+
+    request.state.user = user
+    request.state.auth_session = auth_session
+    if request.method not in {"GET", "HEAD", "OPTIONS"} and path != "/api/v1/alerts/webhook":
+        csrf_cookie = request.cookies.get(CSRF_COOKIE_NAME)
+        csrf_header = request.headers.get(CSRF_HEADER_NAME)
+        if (
+            not csrf_cookie
+            or not csrf_header
+            or csrf_cookie != csrf_header
+            or not csrf_token_is_valid(auth_session, csrf_header)
+        ):
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "CSRF token missing or invalid."},
+            )
+    return await call_next(request)
 
 
 @app.get("/", include_in_schema=False)
 def dashboard() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
+
+
+@app.get("/login", include_in_schema=False)
+def login_page() -> FileResponse:
+    return FileResponse(STATIC_DIR / "login.html")
 
 
 @app.get("/health", response_model=HealthResponse, tags=["health"])
@@ -235,38 +326,46 @@ def validate_configuration() -> dict[str, Any]:
 @app.get("/api/v1/anomaly-detection/status", tags=["anomaly detection"])
 def anomaly_status() -> dict[str, Any]:
     model, model_error = _load_model()
+    model_state = (
+        "unavailable" if model_error else "available" if model is not None else "not_trained"
+    )
     return {
         "rule_based_detection": "available",
         "isolation_forest": "unavailable"
-        if model_error
+        if model_state == "unavailable"
         else "trained"
-        if model is not None
+        if model_state == "available"
         else "not_trained",
+        "model_availability": model_state,
+        "model_type": "IsolationForest",
+        "model_version": getattr(model, "cloudnetops_model_version", None),
+        "training_timestamp": getattr(model, "cloudnetops_trained_at", None),
         "model_error": model_error,
-        "features": [
-            "cpu_percent",
-            "memory_percent",
-            "disk_percent",
-            "network_receive_bytes_per_second",
-            "network_transmit_bytes_per_second",
-        ],
+        "features": list(FEATURES),
+        "last_inference": dict(MODEL_LAST_INFERENCE),
         "training_note": (
             "Train with python -m app.anomaly_detection.train; demo training uses synthetic data."
         ),
     }
 
 
-@app.post("/api/v1/anomalies/score", tags=["anomalies"])
+@app.post(
+    "/api/v1/anomalies/score",
+    tags=["anomalies"],
+    dependencies=[Depends(require_roles("ADMIN", "OPERATOR"))],
+)
 def score_anomaly(sample: MetricSample, session: Session = Depends(get_session)) -> dict[str, Any]:
     model, model_error = _load_model()
     detection = detect_metrics(sample.model_dump(), model)
-    return _record_detection(sample, detection, session, model_error)
+    findings = detect_hybrid_metrics(sample.model_dump(), model)
+    return _record_detection(sample, detection, session, model_error, findings=findings)
 
 
 @app.post("/api/v1/anomalies/scan", tags=["anomalies"])
 @app.post("/api/v1/anomaly-detection/run", tags=["anomaly detection"])
 async def scan_current_metrics(
     session: Session = Depends(get_session),
+    _: User = Depends(require_roles("ADMIN", "OPERATOR")),
 ) -> dict[str, Any]:
     queries = {name: METRIC_QUERIES[name] for name in SCAN_METRIC_NAMES}
     try:
@@ -299,7 +398,15 @@ async def scan_current_metrics(
         ) from error
     model, model_error = _load_model()
     detection = detect_metrics(sample.model_dump(), model)
-    result = _record_detection(sample, detection, session, model_error)
+    findings = detect_hybrid_metrics(sample.model_dump(), model)
+    result = _record_detection(
+        sample,
+        detection,
+        session,
+        model_error,
+        findings=findings,
+        target="",
+    )
     result["sampled_at"] = datetime.now(UTC).isoformat()
     result["source"] = "Prometheus"
     return result
@@ -310,25 +417,67 @@ def _record_detection(
     detection: Detection,
     session: Session,
     model_error: str | None = None,
+    *,
+    findings: list[Detection] | None = None,
+    target: str = "",
 ) -> dict[str, Any]:
-    ANOMALY_EVALUATIONS.labels(detector=detection.detector).inc()
-    event_id = None
-    if detection.is_anomaly:
+    global MODEL_LAST_INFERENCE
+    model_status = (
+        "unavailable"
+        if model_error
+        else "trained"
+        if detection.score is not None
+        else "not_trained"
+    )
+    evaluated = findings if findings is not None else ([detection] if detection.is_anomaly else [])
+    ANOMALY_EVALUATIONS.labels(detector="rule").inc()
+    if model_status == "trained":
+        ANOMALY_EVALUATIONS.labels(detector="isolation_forest").inc()
+    MODEL_LAST_INFERENCE = {
+        "status": "completed_with_findings" if evaluated else "completed",
+        "timestamp": datetime.now(UTC).isoformat(),
+        "model_status": model_status,
+    }
+    recorded: list[tuple[Detection, AnomalyEvent]] = []
+    for finding in evaluated:
         ANOMALY_FINDINGS.labels(
-            detector=detection.detector,
-            severity=detection.severity,
+            detector=finding.detector,
+            severity=finding.severity,
         ).inc()
         event = AnomalyEvent(
-            detector=detection.detector,
-            severity=detection.severity,
-            score=detection.score,
-            explanation=detection.explanation,
-            metrics_json=json.dumps(detection.metrics, sort_keys=True),
+            detector=finding.detector,
+            severity=finding.severity,
+            score=finding.score,
+            explanation=finding.explanation,
+            metrics_json=json.dumps(finding.metrics, sort_keys=True),
+            target=target,
+            model_status=model_status,
         )
         session.add(event)
+        create_incident_from_anomaly(session, event)
+        recorded.append((finding, event))
+    if recorded:
         session.commit()
-        session.refresh(event)
-        event_id = event.id
+        for _, event in recorded:
+            session.refresh(event)
+    primary_event = next(
+        (event for finding, event in recorded if finding.detector == detection.detector),
+        recorded[0][1] if recorded else None,
+    )
+    serialized_findings = [
+        {
+            "event_id": event.id,
+            "detector": finding.detector,
+            "severity": finding.severity,
+            "score": finding.score,
+            "explanation": finding.explanation,
+            "metrics": finding.metrics,
+            "detection_time": _utc_iso(event.created_at),
+            "model_status": event.model_status,
+            "target": event.target or None,
+        }
+        for finding, event in recorded
+    ]
     return {
         "is_anomaly": detection.is_anomaly,
         "detector": detection.detector,
@@ -336,16 +485,11 @@ def _record_detection(
         "score": detection.score,
         "explanation": detection.explanation,
         "metrics": detection.metrics,
-        "event_id": event_id,
+        "event_id": primary_event.id if primary_event is not None else None,
+        "findings": serialized_findings,
         "timestamp": datetime.now(UTC).isoformat(),
         "score_is_probability": False,
-        "model_status": (
-            "unavailable"
-            if model_error
-            else "trained"
-            if detection.score is not None
-            else "not_trained"
-        ),
+        "model_status": model_status,
         "model_error": model_error,
         "warning": "An anomaly is a signal for investigation, not a confirmed incident.",
     }
@@ -385,18 +529,210 @@ def list_anomalies(
         .offset(offset)
         .limit(limit)
     ).all()
-    return [
+    return [_serialize_anomaly_event(event) for event in events]
+
+
+def _serialize_anomaly_event(event: AnomalyEvent) -> dict[str, Any]:
+    return {
+        "id": event.id,
+        "timestamp": _utc_iso(event.created_at),
+        "detector": event.detector,
+        "detection_source": event.detector,
+        "model_status": event.model_status,
+        "target": event.target or None,
+        "severity": event.severity,
+        "score": event.score,
+        "explanation": event.explanation,
+        "metrics": json.loads(event.metrics_json),
+    }
+
+
+@app.get("/api/aiops/overview", tags=["AIOps"])
+async def aiops_overview(session: Session = Depends(get_session)) -> dict[str, Any]:
+    monitoring = None
+    reason = None
+    try:
+        monitoring = await monitoring_summary()
+    except HTTPException as error:
+        if error.status_code != 503:
+            raise
+        reason = str(error.detail)
+
+    active_alerts = int(
+        session.scalar(
+            select(func.count(AlertEvent.id)).where(AlertEvent.status == "firing")
+        )
+        or 0
+    )
+    critical_alerts = int(
+        session.scalar(
+            select(func.count(AlertEvent.id)).where(
+                AlertEvent.status == "firing",
+                AlertEvent.severity == "critical",
+            )
+        )
+        or 0
+    )
+    anomaly_count = int(session.scalar(select(func.count(AnomalyEvent.id))) or 0)
+    severity_rows = session.execute(
+        select(AnomalyEvent.severity, func.count(AnomalyEvent.id)).group_by(
+            AnomalyEvent.severity
+        )
+    ).all()
+    severity_counts = {severity: count for severity, count in severity_rows}
+    latest = session.scalars(
+        select(AnomalyEvent)
+        .order_by(desc(AnomalyEvent.created_at), desc(AnomalyEvent.id))
+        .limit(10)
+    ).all()
+    summary = build_overview(
+        monitoring,
+        active_alerts=active_alerts,
+        critical_alerts=critical_alerts,
+        anomaly_count=anomaly_count,
+        anomaly_severity_counts=severity_counts,
+        cpu_threshold=settings.cpu_threshold_percent,
+        memory_threshold=settings.memory_threshold_percent,
+        disk_threshold=settings.disk_threshold_percent,
+        reason=reason,
+    )
+    summary["model_status"] = anomaly_status()
+    summary["latest_anomalies"] = [_serialize_anomaly_event(item) for item in latest]
+    return summary
+
+
+@app.get("/api/aiops/anomalies", tags=["AIOps"])
+def aiops_anomalies(
+    severity: Literal["critical", "warning", "info", "unknown"] | None = None,
+    source: Literal["rule", "isolation_forest"] | None = None,
+    target: str | None = Query(default=None, max_length=512),
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0, le=10000),
+    session: Session = Depends(get_session),
+) -> list[dict[str, Any]]:
+    statement = select(AnomalyEvent)
+    if severity:
+        statement = statement.where(AnomalyEvent.severity == severity)
+    if source:
+        statement = statement.where(AnomalyEvent.detector == source)
+    if target:
+        statement = statement.where(AnomalyEvent.target == target)
+    events = session.scalars(
+        statement.order_by(desc(AnomalyEvent.created_at), desc(AnomalyEvent.id))
+        .offset(offset)
+        .limit(limit)
+    ).all()
+    return [_serialize_anomaly_event(event) for event in events]
+
+
+@app.get("/api/aiops/correlations", tags=["AIOps"])
+def aiops_correlations(
+    limit: int = Query(default=50, ge=1, le=200),
+    session: Session = Depends(get_session),
+) -> list[dict[str, Any]]:
+    rows = session.execute(
+        select(IncidentEvent, Incident)
+        .join(Incident, Incident.id == IncidentEvent.incident_id)
+        .order_by(desc(Incident.updated_at), desc(IncidentEvent.created_at))
+        .limit(limit)
+    ).all()
+    correlations: dict[int, dict[str, Any]] = {}
+    for event, incident in rows:
+        related = correlations.setdefault(
+            incident.id,
+            {
+                "incident_id": incident.id,
+                "title": incident.title,
+                "severity": incident.severity,
+                "status": incident.status,
+                "target": incident.affected_target or None,
+                "events": [],
+            },
+        )
+        if event.alert_event_id is not None:
+            alert = session.get(AlertEvent, event.alert_event_id)
+            source = {
+                "type": "alert",
+                "id": event.alert_event_id,
+                "name": alert.alertname if alert else None,
+            }
+        else:
+            anomaly = session.get(AnomalyEvent, event.anomaly_event_id)
+            source = {
+                "type": "anomaly",
+                "id": event.anomaly_event_id,
+                "name": anomaly.detector if anomaly else None,
+            }
+        related["events"].append(
+            {
+                **source,
+                "correlation_reason": event.correlation_reason,
+                "timestamp": _utc_iso(event.created_at),
+            }
+        )
+    return list(correlations.values())
+
+
+@app.get("/api/aiops/diagnostics", tags=["AIOps"])
+async def aiops_diagnostics(session: Session = Depends(get_session)) -> dict[str, Any]:
+    monitoring = await monitoring_summary()
+    alerts = list_alerts(limit=500, offset=0, session=session)
+    recent_anomalies = list_anomalies(limit=10, offset=0, session=session)
+    suggestions = build_diagnostics(
+        monitoring,
+        alerts,
+        recent_anomalies,
+        cpu_threshold=settings.cpu_threshold_percent,
+        memory_threshold=settings.memory_threshold_percent,
+        disk_threshold=settings.disk_threshold_percent,
+    )
+    return {
+        "status": "suggestions_available" if suggestions else "no_evidence",
+        "suggestions": suggestions,
+        "source": "Prometheus and stored application events",
+        "notice": "These are evidence-based diagnostic suggestions, not confirmed root causes.",
+    }
+
+
+@app.get("/api/aiops/model-status", tags=["AIOps"])
+def aiops_model_status() -> dict[str, Any]:
+    return anomaly_status()
+
+
+@app.get("/api/aiops/history", tags=["AIOps"])
+def aiops_history(
+    days: int = Query(default=30, ge=1, le=365),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    now = datetime.now(UTC)
+    start = now - timedelta(days=days - 1)
+    events = session.scalars(
+        select(AnomalyEvent)
+        .where(AnomalyEvent.created_at >= start)
+        .order_by(desc(AnomalyEvent.created_at), desc(AnomalyEvent.id))
+        .limit(5000)
+    ).all()
+    serialized = [_serialize_anomaly_event(event) for event in events]
+    incidents = session.scalars(
+        select(Incident)
+        .where(Incident.created_at >= start)
+        .order_by(desc(Incident.created_at), desc(Incident.id))
+        .limit(1000)
+    ).all()
+    result = build_historical_analysis(serialized, days, now)
+    result["incident_timeline"] = [
         {
-            "id": event.id,
-            "timestamp": _utc_iso(event.created_at),
-            "detector": event.detector,
-            "severity": event.severity,
-            "score": event.score,
-            "explanation": event.explanation,
-            "metrics": json.loads(event.metrics_json),
+            "id": incident.id,
+            "title": incident.title,
+            "severity": incident.severity,
+            "status": incident.status,
+            "target": incident.affected_target or None,
+            "first_detected_at": _utc_iso(incident.first_detected_at),
+            "last_updated_at": _utc_iso(incident.last_updated_at),
         }
-        for event in events
+        for incident in incidents
     ]
+    return result
 
 
 @app.get("/api/v1/alerts", tags=["alerts"])
@@ -430,15 +766,50 @@ def list_alerts(
 
 @app.post("/api/v1/alerts/webhook", include_in_schema=False)
 async def receive_alertmanager_webhook(
+    request: Request,
     payload: AlertManagerPayload,
     session: Session = Depends(get_session),
 ) -> dict[str, int]:
-    """Accept Alertmanager events on the private Compose network."""
+    """Accept authenticated Alertmanager events from the private Compose network."""
+    token_file = settings.alertmanager_webhook_token_file
+    if not token_file:
+        raise HTTPException(
+            status_code=503,
+            detail="Alertmanager webhook authentication is not configured.",
+        )
+    try:
+        expected_token = Path(token_file).read_text(encoding="utf-8").strip()
+    except OSError as error:
+        logger.error(
+            "Alertmanager webhook token file is unavailable",
+            extra={"error_type": type(error).__name__},
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Alertmanager webhook authentication is unavailable.",
+        ) from None
+    if not expected_token or len(expected_token) > 4096:
+        raise HTTPException(
+            status_code=503,
+            detail="Alertmanager webhook authentication is misconfigured.",
+        )
+    scheme, separator, supplied_token = request.headers.get("authorization", "").partition(" ")
+    if (
+        scheme.casefold() != "bearer"
+        or not separator
+        or not hmac.compare_digest(
+            supplied_token.strip().encode("utf-8"),
+            expected_token.encode("utf-8"),
+        )
+    ):
+        raise HTTPException(status_code=401, detail="Invalid webhook credentials.")
+
     for incoming in payload.alerts:
         labels = incoming.labels
         alert = session.scalar(
             select(AlertEvent).where(AlertEvent.fingerprint == incoming.fingerprint)
         )
+        previous_status = alert.status if alert is not None else None
         if alert is None:
             alert = AlertEvent(
                 fingerprint=incoming.fingerprint, alertname=labels.get("alertname", "Unknown")
@@ -453,6 +824,8 @@ async def receive_alertmanager_webhook(
         alert.ends_at = incoming.endsAt
         alert.labels_json = json.dumps(labels, sort_keys=True)
         alert.updated_at = datetime.now(UTC)
+        session.flush()
+        correlate_alert_event(session, alert, previous_status=previous_status)
     session.commit()
     return {"received": len(payload.alerts)}
 

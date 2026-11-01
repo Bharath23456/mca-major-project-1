@@ -1,16 +1,42 @@
+import os
 from collections.abc import Iterator
 from datetime import UTC, datetime
+from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app import main
+from app.auth import hash_password
+from app.database import SessionLocal
 from app.main import app
+from app.models import User
+
+TEST_CREDENTIAL = "test-credential-phrase-2026"
 
 
 @pytest.fixture
 def client() -> Iterator[TestClient]:
     with TestClient(app) as test_client:
+        suffix = uuid4().hex[:12]
+        with SessionLocal() as session:
+            user = User(
+                username=f"test-admin-{suffix}",
+                email=f"test-{suffix}@example.test",
+                password_hash=hash_password(TEST_CREDENTIAL),
+                role="ADMIN",
+                is_active=True,
+            )
+            session.add(user)
+            session.commit()
+            session.refresh(user)
+        login = test_client.post(
+            "/api/auth/login",
+            json={"username": user.username, "password": TEST_CREDENTIAL},
+        )
+        assert login.status_code == 200
+        test_client.headers["X-CSRF-Token"] = login.json()["csrf_token"]
         yield test_client
 
 
@@ -105,6 +131,37 @@ def test_anomaly_score_records_threshold_event(client: TestClient) -> None:
     assert 'cloudnetops_anomaly_findings_total{detector="rule",severity="critical"}' in app_metrics
 
 
+def test_hybrid_score_stores_threshold_and_model_findings(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import numpy as np
+
+    class AnomalousModel:
+        def predict(self, _) -> np.ndarray:
+            return np.array([-1])
+
+        def decision_function(self, _) -> np.ndarray:
+            return np.array([-0.5])
+
+    monkeypatch.setattr(main, "load_model", lambda: AnomalousModel())
+    response = client.post(
+        "/api/v1/anomalies/score",
+        json={
+            "cpu_percent": 96,
+            "memory_percent": 95,
+            "disk_percent": 75,
+            "network_receive_bytes_per_second": 1200,
+            "network_transmit_bytes_per_second": 800,
+        },
+    )
+
+    assert response.status_code == 200
+    assert [item["detector"] for item in response.json()["findings"]] == [
+        "rule",
+        "isolation_forest",
+    ]
+
+
 def test_anomaly_score_validates_percentages(client: TestClient) -> None:
     response = client.post(
         "/api/v1/anomalies/score",
@@ -127,6 +184,34 @@ def test_config_validation_reports_thresholds(client: TestClient) -> None:
     assert response.json()["valid"] is True
 
 
+def test_aiops_overview_uses_fresh_prometheus_values(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fake_query_many(queries: dict[str, str]) -> dict[str, list[dict]]:
+        timestamp = datetime.now(UTC).timestamp()
+        return {
+            name: [
+                {
+                    "metric": {"instance": "host-a", "job": "node-exporter"},
+                    "value": [
+                        timestamp,
+                        "1" if name in {"target_up", "probe_success"} else "42",
+                    ],
+                }
+            ]
+            for name in queries
+        }
+
+    monkeypatch.setattr(main, "_query_many", fake_query_many)
+    response = client.get("/api/aiops/overview")
+
+    assert response.status_code == 200
+    summary = response.json()
+    assert summary["metrics"]["cpu_percent"]["value"] == 42
+    assert summary["targets"]["healthy"] == 1
+    assert summary["model_status"]["model_type"] == "IsolationForest"
+
+
 def test_dashboard_and_stylesheet_are_served(client: TestClient) -> None:
     dashboard_response = client.get("/")
     stylesheet_response = client.get("/static/styles.css")
@@ -134,6 +219,13 @@ def test_dashboard_and_stylesheet_are_served(client: TestClient) -> None:
     assert dashboard_response.status_code == 200
     assert "System overview" in dashboard_response.text
     assert stylesheet_response.status_code == 200
+
+
+def test_login_page_is_available(client: TestClient) -> None:
+    response = client.get("/login")
+
+    assert response.status_code == 200
+    assert "Username or email" in response.text
 
 
 def test_summary_marks_values_with_units_and_fresh_timestamps(
@@ -229,8 +321,22 @@ def test_anomaly_scan_requires_fresh_prometheus_samples(
 
 
 def test_alertmanager_webhook_stores_alert_history(client: TestClient) -> None:
+    token_file = Path(os.environ["ALERTMANAGER_WEBHOOK_TOKEN_FILE"])
+    unauthenticated = client.post(
+        "/api/v1/alerts/webhook",
+        json={"status": "firing", "alerts": []},
+    )
+    assert unauthenticated.status_code == 401
+    invalid_credentials = client.post(
+        "/api/v1/alerts/webhook",
+        headers={"Authorization": "Bearer invalid"},
+        json={"status": "firing", "alerts": []},
+    )
+    assert invalid_credentials.status_code == 401
+
     response = client.post(
         "/api/v1/alerts/webhook",
+        headers={"Authorization": f"Bearer {token_file.read_text(encoding='utf-8')}"},
         json={
             "status": "firing",
             "alerts": [

@@ -13,6 +13,7 @@ RUN pip install --no-cache-dir pip==26.2.2 \
     && chown appuser:appuser /data
 
 COPY app ./app
+COPY alembic.ini .
 COPY scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint
 RUN chmod 0555 /usr/local/bin/docker-entrypoint
 

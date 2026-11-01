@@ -214,15 +214,16 @@ automated diagnosis or remediation.
 ## 3.2 Feasibility study
 
 - **Technical:** The project uses established open-source components and
-  Docker Compose. The application and its standalone container were tested;
-  integrated monitoring services remain unverified because their images
-  could not be downloaded in this environment.
+  Docker Compose. Unit tests cover the application and its security/incident
+  workflows; the current local Compose integration status is recorded in
+  `docs/testing.md`.
 - **Economic:** The local workflow uses no paid services or cloud resources.
   It requires local memory and disk for the containers, images, and stored
   monitoring data.
 - **Operational:** The system is intended for a student demonstration.
-  Monitoring ports are local, the application has no built-in user login,
-  and the Alertmanager webhook is intended for the private Compose network.
+  Monitoring ports are local, the dashboard uses role-based login, and the
+  bearer-token-protected Alertmanager webhook is intended for the private
+  Compose network.
 
 ## 3.3 Software requirements specification
 
@@ -379,15 +380,18 @@ erDiagram
     }
 ```
 
-The two event types are stored independently; no foreign-key relationship is
-defined between them.
+In addition to the monitoring event tables, the current schema includes users,
+server-side sessions, login-attempt records, incidents, incident-event
+relationships, notes, and audit history. Alembic migrations preserve the
+existing monitoring tables and records. See `docs/database.md` for the
+maintained schema and migration procedure.
 
 Local service ports bind to loopback; exporters remain internal to the Compose
-network. The Alertmanager webhook is intended for that private network and
-must not be exposed through a public reverse proxy. The application does not
-provide user authentication, so any cloud deployment needs a separately
-configured access-control layer. Endpoint probes must be limited to systems
-the operator is authorized to monitor.
+network. The Alertmanager webhook requires a bearer token from a local Docker
+secret and must not be exposed through a public reverse proxy. Application
+roles are enforced by the API; remote deployments still require TLS and
+network-level access controls. Endpoint probes must be limited to systems the
+operator is authorized to monitor.
 
 # Chapter 5 - Implementation and Code Design
 

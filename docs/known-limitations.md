@@ -9,12 +9,13 @@
   target creation; target-file changes require local operator access.
 - The default endpoint, `https://example.com`, is an external connectivity
   check. A successful response depends on DNS and outbound network access.
-- The FastAPI app, Prometheus, and Alertmanager do not provide user login.
-  Compose binds their published ports to loopback; protect all routes with an
-  authenticated proxy/IAP/VPN before any remote exposure. Grafana has local
-  admin authentication.
-- The Alertmanager webhook trusts the private Compose network and has no
-  request authentication; never expose it publicly.
+- Prometheus and Alertmanager web interfaces have no user login; Compose binds
+  their published ports to loopback. Keep them private and use a VPN/IAP or
+  SSH tunnel for remote access. The FastAPI dashboard has application login
+  and backend ADMIN/OPERATOR/VIEWER permissions.
+- The Alertmanager webhook uses a bearer token mounted as a local Docker
+  secret, but it is still intended only for the private Compose network.
+  Never expose it through a public reverse proxy.
 - Isolation Forest is trained on synthetic demonstration data unless an
   operator supplies a suitable real baseline. Scores are not probabilities,
   model explanations are sample-level, and results do not prove root cause.

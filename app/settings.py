@@ -13,6 +13,15 @@ class Settings:
     cpu_threshold_percent: float = float(os.getenv("CPU_THRESHOLD_PERCENT", "85"))
     memory_threshold_percent: float = float(os.getenv("MEMORY_THRESHOLD_PERCENT", "90"))
     disk_threshold_percent: float = float(os.getenv("DISK_THRESHOLD_PERCENT", "90"))
+    session_ttl_seconds: int = int(os.getenv("SESSION_TTL_SECONDS", "28800"))
+    session_cookie_secure: bool = os.getenv("SESSION_COOKIE_SECURE", "false").lower() == "true"
+    login_identity_limit: int = int(os.getenv("LOGIN_IDENTITY_LIMIT", "5"))
+    login_ip_limit: int = int(os.getenv("LOGIN_IP_LIMIT", "20"))
+    login_window_seconds: int = int(os.getenv("LOGIN_WINDOW_SECONDS", "900"))
+    alertmanager_webhook_token_file: str = os.getenv("ALERTMANAGER_WEBHOOK_TOKEN_FILE", "")
+    alert_correlation_window_seconds: int = int(
+        os.getenv("ALERT_CORRELATION_WINDOW_SECONDS", "600")
+    )
 
 
 settings = Settings()

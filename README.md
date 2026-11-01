@@ -19,12 +19,25 @@ No GCP resources or paid services are used by these local commands.
 ```powershell
 if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 notepad .env
+New-Item -ItemType Directory -Force .\secrets | Out-Null
+if (-not (Test-Path .\secrets\alertmanager-webhook-token)) {
+  $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+  $bytes = New-Object byte[] 32
+  $rng.GetBytes($bytes)
+  [System.IO.File]::WriteAllText(
+    (Join-Path (Get-Location) 'secrets\alertmanager-webhook-token'),
+    [Convert]::ToBase64String($bytes)
+  )
+}
 docker compose up --build -d --wait --wait-timeout 180
 curl.exe --fail http://127.0.0.1:8000/health/ready
+docker compose exec app python -m app.auth_setup
 ```
 
 Set `GRAFANA_ADMIN_PASSWORD` to a unique password in `.env`; Compose refuses
-to start Grafana when this value is missing. `.env` is ignored by Git. Open:
+to start Grafana when this value is missing. The commands create a random
+Alertmanager webhook token in the ignored `secrets/` directory; do not commit
+or share it. Both `.env` and `secrets/` are ignored by Git. Open:
 
 - Dashboard: <http://127.0.0.1:8000/>
 - FastAPI documentation: <http://127.0.0.1:8000/docs>
@@ -35,7 +48,15 @@ to start Grafana when this value is missing. `.env` is ignored by Git. Open:
 All published ports bind to `127.0.0.1`; they are not published on every
 network interface. Grafana uses the username and password from `.env`.
 Prometheus and Alertmanager have no application-level login in this local
-configuration, so keep them private.
+configuration, so keep them private. On first setup, the final command above
+prompts for the first administrator's username, email, and password. It
+creates no default credentials and refuses to run once an administrator exists.
+Sign in at <http://127.0.0.1:8000/login>.
+The sign-in page also offers self-registration for read-only `VIEWER` accounts;
+register with a username, email, and password of at least 12 characters, then
+sign in with either your username or email. Use the first-admin setup command
+above to create an administrator; public registration cannot grant elevated
+roles.
 
 ### Ubuntu/Linux
 
@@ -44,8 +65,16 @@ Install Docker Engine and the Docker Compose plugin, then run:
 ```bash
 if [ ! -f .env ]; then cp .env.example .env; fi
 ${EDITOR:-nano} .env
+install -d -m 700 secrets
+if [ ! -f secrets/alertmanager-webhook-token ]; then
+  umask 077
+  openssl rand -base64 32 > secrets/alertmanager-webhook-token
+fi
+sudo chown root:10001 secrets/alertmanager-webhook-token
+sudo chmod 0440 secrets/alertmanager-webhook-token
 docker compose up --build -d --wait --wait-timeout 180
 curl --fail http://127.0.0.1:8000/health/ready
+docker compose exec app python -m app.auth_setup
 ```
 
 ### Stop and preserve data
@@ -71,12 +100,21 @@ their data; use that only when you intentionally want a clean reset.
   container trains a deterministic demo model only when its persistent model
   file is absent. Its training and evaluation data are synthetic and clearly
   labelled as such.
-- Dashboard for metric summaries, time-series history, probe status, targets,
-  received alerts, and anomaly events.
+- Argon2id-backed authentication, expiring server-side sessions, CSRF
+  protection, login throttling, and ADMIN/OPERATOR/VIEWER backend permissions.
+- Role-aware dashboard for real Prometheus metrics, targets, alerts, anomaly
+  findings, diagnostics, model status, incidents, user administration, and
+  audit history. Unavailable telemetry remains unknown/unavailable, never zero.
+- Hybrid threshold and Isolation Forest event history, rule-based alert
+  correlation, evidence-backed diagnostic suggestions, and incident workflows
+  with assignment, notes, acknowledgement, resolution, and audit history.
+- Alembic migrations preserve existing alert/anomaly data while adding
+  authentication and incident tables.
 - Automated tests and GitHub Actions CI. Optional GCP instructions are
   provided, but no cloud resources are created or claimed as deployed.
 
 See [docs/architecture.md](docs/architecture.md),
+[docs/database.md](docs/database.md),
 [docs/api.md](docs/api.md), [docs/ml-design.md](docs/ml-design.md),
 [docs/setup.md](docs/setup.md), [docs/testing.md](docs/testing.md),
 [docs/security.md](docs/security.md), [docs/runbook.md](docs/runbook.md),
@@ -120,7 +158,33 @@ POST /api/v1/anomalies/scan
 POST /api/v1/anomalies/score
 GET  /api/v1/anomaly-detection/status
 POST /api/v1/anomaly-detection/run
+POST /api/auth/login
+POST /api/auth/logout
+GET  /api/auth/me
+GET  /api/aiops/overview
+GET  /api/aiops/anomalies
+GET  /api/aiops/correlations
+GET  /api/aiops/diagnostics
+GET  /api/aiops/model-status
+GET  /api/aiops/history
+GET  /api/incidents
+GET  /api/incidents/{id}
+POST /api/incidents/{id}/acknowledge
+POST /api/incidents/{id}/notes
+POST /api/incidents/{id}/resolve
+PATCH /api/incidents/{id}/assign
+GET  /api/users                 (ADMIN)
+POST /api/users                 (ADMIN)
+PATCH /api/users/{id}           (ADMIN)
+PATCH /api/users/{id}/role      (ADMIN)
+GET  /api/audit-logs            (ADMIN)
 ```
+
+All application APIs except the explicitly documented health/scrape routes
+require an authenticated session. The private Alertmanager integration route
+instead requires its dedicated bearer-token secret. Use the first-admin
+bootstrap procedure above; there is no seeded account.
+See [docs/api.md](docs/api.md) for role requirements, CSRF use, and filters.
 
 `/api/v1/anomalies/scan` reads the latest complete metric sample from
 Prometheus; it returns an explicit error when any required sample is absent or
@@ -151,8 +215,13 @@ py -3.12 -m venv .venv
 python -m pip install --upgrade pip
 python -m pip install -r requirements-dev.txt
 python -m pytest -q
+python -m app.auth_setup
 python -m uvicorn app.main:app --reload
 ```
+
+The local dashboard uses an HttpOnly session cookie. `SESSION_COOKIE_SECURE`
+is `false` for loopback HTTP; set it to `true` when serving behind HTTPS.
+Admin setup is an interactive local command, not an HTTP endpoint.
 
 On Ubuntu/Linux, use `python3.12 -m venv .venv` and
 `source .venv/bin/activate` instead. For native development without Compose,
@@ -169,6 +238,7 @@ health endpoint and rule-based sample scoring remain available without it.
 - Isolation Forest provides a sample-level score, not causal explanations.
 - Linux host measurements are not native Windows measurements under Docker
   Desktop.
-- Alertmanager's webhook is intended for the private Compose network. Do not
-  expose that route through an internet-facing reverse proxy.
+- Alertmanager's webhook requires a private Compose secret and is intended
+  only for the private Compose network. Do not expose it through an
+  internet-facing reverse proxy.
 - GCP setup is optional and has not been run as part of this local workflow.

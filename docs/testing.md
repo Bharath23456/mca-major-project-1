@@ -29,10 +29,10 @@ measurements on a real cloud host.
 
 ## Results record
 
-The following results are from the current local verification run. The API
-tests ran in the repository virtual environment; the integrated services ran
-in Docker Desktop. Docker Desktop's Node Exporter metrics describe its Linux
-environment, not native Windows host measurements.
+The following results are from this implementation run. The API tests ran in
+the repository virtual environment; an isolated Compose project used separate
+ports and volumes from any pre-existing stack. Docker Desktop's Node Exporter
+metrics describe its Linux environment, not native Windows host measurements.
 
 Verification environment: Windows, project interpreter Python 3.15.2,
 application container Python 3.12.16, Docker Engine 29.9.2, and Docker Compose
@@ -40,23 +40,19 @@ application container Python 3.12.16, Docker Engine 29.9.2, and Docker Compose
 
 | Test ID | Objective | Procedure | Expected result | Actual result | Pass/fail |
 |---|---|---|---|---|---|
-| T-01 | API health, OpenAPI, and failure paths | `python -m pytest -q` | Health JSON, documented routes, and covered error paths | 26 tests passed; one Starlette/httpx deprecation warning | Pass |
-| T-02 | Input validation | Post CPU outside 0–100 to anomaly score API | HTTP 422 | API returned HTTP 422 for the invalid sample | Pass |
-| T-03 | Threshold detection and event persistence | Scan current Prometheus data | Finding includes score/explanation and persisted event ID | Live scan used Prometheus telemetry; threshold detector reported disk at 100%, critical, with event ID 3. The score is explicitly not a probability. | Pass |
-| T-04 | Synthetic Isolation Forest evaluation | `python -m app.anomaly_detection.train` | Measured synthetic-test metrics and saved model | 1,200 training rows; test precision 0.8475, recall 1.0000, F1 0.9174; confusion matrix `[[382, 18], [0, 100]]`. Synthetic-only result. | Pass |
-| T-05 | Compose and JSON configuration | `docker compose config --quiet`; `python -m json.tool` | Exit code 0 | Compose and Grafana dashboard JSON validation passed | Pass |
-| T-06 | Prometheus and Alertmanager configuration | `promtool check config`; `amtool check-config` | Configurations accepted | Prometheus configuration accepted with 7 alert rules; Alertmanager configuration accepted | Pass |
-| T-07 | Application image build | `docker compose up --build -d --force-recreate --wait --wait-timeout 240` | Updated app image builds and services start | Compose build and startup completed successfully; all six containers are running. App and Prometheus report Docker health checks as healthy; other services have no Docker healthcheck. | Pass |
-| T-08 | Integrated scrape and readiness | `GET /health/ready`; Prometheus `/api/v1/targets` | Ready dependencies and configured scrape targets report healthy | Readiness returned `ready`; all six Prometheus targets reported `up` | Pass |
-| T-09 | Approved endpoint probe | Query Prometheus `probe_success` | Configured endpoint responds | `https://example.com` returned `probe_success=1` | Pass |
-| T-10 | Alert evaluation and delivery | Scan a live finding; inspect Prometheus rules and Alertmanager | Finding alert reaches Alertmanager and API history | `AnomalyFindingDetected` reached `firing`; Alertmanager showed it active and the application alert history recorded the firing event. Recovery delivery was not tested. | Pass |
-| T-11 | Lint and dependency security checks | Ruff and `pip-audit -r requirements-dev.txt` | Clean lint and no known vulnerable dependencies | Ruff passed; pip-audit reported no known vulnerabilities | Pass |
-| T-12 | App anomaly telemetry | Query app `/metrics` after scans | Evaluation/finding counters exported | `cloudnetops_anomaly_evaluations_total{detector="rule"}=2` and `cloudnetops_anomaly_findings_total{detector="rule",severity="critical"}=2` observed | Pass |
-| T-13 | Grafana provisioning | Grafana API health and dashboard API | Provisioned dashboard and expected panels available | Grafana 12.1.1 healthy; CloudNetOps-AI Infrastructure dashboard provisioned with 9 panels | Pass |
+| T-01 | API, authentication, authorization, AIOps, incidents, and migrations | `python -m pytest -q` | All tests pass | 50 passed; one Starlette/httpx deprecation warning | Pass |
+| T-02 | Python and dashboard JavaScript checks | `ruff check app tests`; `node --check app\static\dashboard.js`; `git diff --check` | No lint, syntax, or whitespace errors | All checks passed | Pass |
+| T-03 | Compose configuration | `docker compose config --quiet` | Compose config parses | Exit code 0 | Pass |
+| T-04 | Updated image and full local stack | Isolated `docker compose -p cloudnetops-secureverify up --build -d --wait --wait-timeout 240` | App and monitoring services start | Build and Compose wait completed successfully; six services were running, with app and Prometheus healthy | Pass |
+| T-05 | Monitoring readiness and scrape targets | `GET /health/ready`; Prometheus `/api/v1/targets` | Dependencies ready and targets available | Readiness was `ready`; 6 of 6 targets were `up` | Pass |
+| T-06 | Alertmanager config and webhook authentication | `amtool check-config`; post without/with bearer token | Config accepted; unauthenticated request rejected; authenticated request accepted | Config check succeeded; invalid token returned 401; valid token returned `{"received":1}` | Pass |
+| T-07 | Alertmanager-to-app delivery | Submit a synthetic test alert to isolated Alertmanager; query isolated SQLite history | Alert is delivered and persisted | The verification alert was present in the isolated app database after delivery | Pass |
+| T-08 | Login page rendering | Open the isolated app at `/login` in the integrated browser | Login form loads without dashboard access | Login page rendered; screenshot captured in the session | Pass |
+| T-09 | Runtime dependency audit | `pip-audit -r requirements.txt` | No known vulnerable runtime dependencies | No known vulnerabilities found | Pass |
 
 This is a local demonstration, not a production benchmark. No GCP resources
-were created. Live alert recovery and performance on a native Linux host
-remain to be demonstrated separately.
+were created. Live alert recovery, end-user flows across all roles, and
+performance on a native Linux host remain to be demonstrated separately.
 
 ## Evaluation limitations
 

@@ -9,4 +9,8 @@ receivers:
   - name: cloudnetops-local-webhook
     webhook_configs:
       - url: http://app:8000/api/v1/alerts/webhook
+        http_config:
+          authorization:
+            type: Bearer
+            credentials_file: /run/secrets/alertmanager_webhook_token
         send_resolved: true

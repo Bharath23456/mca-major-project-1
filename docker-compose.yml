@@ -8,12 +8,15 @@ services:
       DATABASE_URL: sqlite:////data/cloudnetops.db
       MODEL_PATH: /data/isolation_forest.joblib
       BLACKBOX_TARGETS_PATH: /etc/cloudnetops/blackbox_targets.json
+      ALERTMANAGER_WEBHOOK_TOKEN_FILE: /run/secrets/alertmanager_webhook_token
       CPU_THRESHOLD_PERCENT: ${CPU_THRESHOLD_PERCENT:-85}
       MEMORY_THRESHOLD_PERCENT: ${MEMORY_THRESHOLD_PERCENT:-90}
       DISK_THRESHOLD_PERCENT: ${DISK_THRESHOLD_PERCENT:-90}
     volumes:
       - app-data:/data
       - ./monitoring/prometheus/blackbox_targets.json:/etc/cloudnetops/blackbox_targets.json:ro
+    secrets:
+      - alertmanager_webhook_token
     ports:
       - "127.0.0.1:${APP_PORT:-8000}:8000"
     depends_on:
@@ -102,6 +105,10 @@ services:
     volumes:
       - ./monitoring/alertmanager:/etc/alertmanager:ro
       - alertmanager-data:/alertmanager
+    secrets:
+      - alertmanager_webhook_token
+    group_add:
+      - "10001"
     ports:
       - "127.0.0.1:${ALERTMANAGER_PORT:-9093}:9093"
     depends_on:
@@ -131,3 +138,7 @@ volumes:
   prometheus-data:
   alertmanager-data:
   grafana-data:
+
+secrets:
+  alertmanager_webhook_token:
+    file: ./secrets/alertmanager-webhook-token

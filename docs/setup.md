@@ -20,6 +20,16 @@ Windows PowerShell:
 ```powershell
 if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 notepad .env
+New-Item -ItemType Directory -Force .\secrets | Out-Null
+if (-not (Test-Path .\secrets\alertmanager-webhook-token)) {
+  $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+  $bytes = New-Object byte[] 32
+  $rng.GetBytes($bytes)
+  [System.IO.File]::WriteAllText(
+    (Join-Path (Get-Location) 'secrets\alertmanager-webhook-token'),
+    [Convert]::ToBase64String($bytes)
+  )
+}
 docker compose up --build -d --wait --wait-timeout 180
 docker compose ps
 curl.exe --fail http://127.0.0.1:8000/health/live
@@ -31,10 +41,25 @@ Ubuntu/Linux:
 ```bash
 if [ ! -f .env ]; then cp .env.example .env; fi
 nano .env
+install -d -m 700 secrets
+if [ ! -f secrets/alertmanager-webhook-token ]; then
+  umask 077
+  openssl rand -base64 32 > secrets/alertmanager-webhook-token
+fi
+sudo chown root:10001 secrets/alertmanager-webhook-token
+sudo chmod 0440 secrets/alertmanager-webhook-token
 docker compose up --build -d --wait --wait-timeout 180
 docker compose ps
 curl --fail http://127.0.0.1:8000/health/live
 curl --fail http://127.0.0.1:8000/health/ready
+```
+
+The random webhook token is shared with the app and Alertmanager through a
+local Docker secret. Keep `secrets/` private; it is ignored by Git. Bootstrap
+the first application administrator after the stack is ready:
+
+```powershell
+docker compose exec app python -m app.auth_setup
 ```
 
 Dashboard and interfaces:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pickle
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,7 @@ FEATURES = (
     "network_transmit_bytes_per_second",
 )
 MODEL_ARTIFACT_VERSION = 1
+MODEL_VERSION = "1"
 
 
 @dataclass(frozen=True)
@@ -106,8 +108,10 @@ def save_model(model: IsolationForest, path: str | Path = settings.model_path) -
     joblib.dump(
         {
             "artifact_version": MODEL_ARTIFACT_VERSION,
+            "model_version": MODEL_VERSION,
             "feature_schema": list(FEATURES),
             "scikit_learn_version": sklearn.__version__,
+            "trained_at": datetime.now(UTC).isoformat(),
             "model": model,
         },
         temporary_path,
@@ -141,6 +145,8 @@ def load_model(path: str | Path = settings.model_path) -> IsolationForest | None
             raise ValueError(
                 "Legacy model feature count does not match the current feature schema."
             )
+        artifact.cloudnetops_model_version = "legacy"
+        artifact.cloudnetops_trained_at = None
         return artifact
 
     if not isinstance(artifact, dict):
@@ -159,6 +165,9 @@ def load_model(path: str | Path = settings.model_path) -> IsolationForest | None
     model = artifact.get("model")
     if not isinstance(model, IsolationForest):
         raise ValueError("Model artifact does not contain an IsolationForest model.")
+    model.cloudnetops_model_version = artifact.get("model_version", "unknown")
+    trained_at = artifact.get("trained_at")
+    model.cloudnetops_trained_at = trained_at if isinstance(trained_at, str) else None
     return model
 
 
@@ -233,3 +242,31 @@ def detect_metrics(metrics: dict[str, float], model: IsolationForest | None = No
         explanation=explanation,
         metrics=values,
     )
+
+
+def detect_hybrid_metrics(
+    metrics: dict[str, float], model: IsolationForest | None = None
+) -> list[Detection]:
+    primary = detect_metrics(metrics, model)
+    if not primary.is_anomaly:
+        return []
+
+    findings = [primary]
+    if model is not None and primary.detector == "rule":
+        frame = _validate_frame(pd.DataFrame([metrics]))
+        if int(model.predict(frame)[0]) == -1:
+            findings.append(
+                Detection(
+                    is_anomaly=True,
+                    detector="isolation_forest",
+                    severity="warning",
+                    score=float(-model.decision_function(frame)[0]),
+                    explanation=(
+                        "The joint metric pattern differs from the training baseline. "
+                        "Isolation Forest scores the sample as a whole and does not provide "
+                        "per-feature attribution."
+                    ),
+                    metrics=primary.metrics,
+                )
+            )
+    return findings
