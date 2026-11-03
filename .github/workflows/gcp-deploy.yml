@@ -5,7 +5,6 @@ on:
   push:
     branches:
       - main
-
   workflow_dispatch:
 
 permissions:
@@ -23,15 +22,6 @@ jobs:
     environment: production
 
     steps:
-      - name: Authenticate to Google Cloud using WIF
-        uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
-
-      - name: Set up Google Cloud CLI
-        uses: google-github-actions/setup-gcloud@v2
-
       - name: Validate deployment configuration
         shell: bash
         env:
@@ -44,21 +34,23 @@ jobs:
         run: |
           set -euo pipefail
 
-          for value in \
-            "$PROJECT_ID" \
-            "$VM_NAME" \
-            "$VM_ZONE" \
-            "$DEPLOY_USER" \
-            "$WIF_PROVIDER" \
-            "$SERVICE_ACCOUNT"
-          do
-            if [[ -z "$value" ]]; then
-              echo "A required GitHub Actions variable is missing."
+          for name in PROJECT_ID VM_NAME VM_ZONE DEPLOY_USER WIF_PROVIDER SERVICE_ACCOUNT; do
+            if [[ -z "${!name}" ]]; then
+              echo "Missing GitHub Actions variable: $name"
               exit 1
             fi
           done
 
-          gcloud config set project "$PROJECT_ID"
+          echo "All deployment variables are present."
+
+      - name: Authenticate to Google Cloud using WIF
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@v2
 
       - name: Deploy application through IAP SSH
         shell: bash
