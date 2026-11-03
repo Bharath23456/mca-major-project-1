@@ -46,6 +46,7 @@ jobs:
 
       # 2. Authenticate using Workload Identity Federation
       - name: Authenticate to Google Cloud
+        id: auth
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
@@ -55,31 +56,34 @@ jobs:
       - name: Set up Google Cloud CLI
         uses: google-github-actions/setup-gcloud@v2
 
-      # 4. Verify authentication
+      # 4. Verify Google Cloud authentication
       - name: Verify Google Cloud authentication
         shell: bash
         run: |
           set -euo pipefail
 
+          echo "Checking authenticated Google Cloud account..."
           gcloud auth list
 
+          echo "Setting Google Cloud project..."
           gcloud config set project cloudnetops-ai-513607
 
-          gcloud projects describe cloudnetops-ai-513607 \
-            --format="value(projectId)"
+          echo "Google Cloud authentication completed."
 
-      # 5. Verify VM access
+      # 5. Check Google Cloud VM
       - name: Check Google Cloud VM
         shell: bash
         run: |
           set -euo pipefail
+
+          echo "Checking VM access..."
 
           gcloud compute instances describe cloudnetops-ai \
             --project=cloudnetops-ai-513607 \
             --zone=asia-south1-a \
             --format="value(name,status)"
 
-      # 6. Deploy through IAP SSH
+      # 6. Deploy application through IAP SSH
       - name: Deploy application through IAP SSH
         shell: bash
         run: |
@@ -90,6 +94,8 @@ jobs:
           VM_ZONE="asia-south1-a"
           DEPLOY_USER="admeizodevelopment"
 
+          echo "Connecting to Google Cloud VM..."
+
           REMOTE_COMMAND="sudo -n -u ${DEPLOY_USER} bash -lc 'set -euo pipefail; cd /opt/cloudnetops-ai; git fetch origin main; git reset --hard origin/main; sudo -n docker compose config --quiet; sudo -n docker compose up --build -d --wait --wait-timeout 180; curl --fail --silent --show-error http://127.0.0.1:8000/health/ready'"
 
           gcloud compute ssh "$VM_NAME" \
@@ -99,7 +105,7 @@ jobs:
             --quiet \
             --command="$REMOTE_COMMAND"
 
-      # 7. Deployment result
+      # 7. Deployment completed
       - name: Deployment completed
         run: |
           echo "CloudNetOps-AI deployment completed successfully."
