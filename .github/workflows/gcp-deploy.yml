@@ -83,8 +83,9 @@ jobs:
             --zone=asia-south1-a \
             --format="value(name,status)"
 
-      # 6. Deploy application through IAP SSH
-      - name: Deploy application through IAP SSH
+      
+      # 6. Identify GitHub Actions SSH identity
+      - name: Identify deployment SSH account
         shell: bash
         run: |
           set -euo pipefail
@@ -92,11 +93,10 @@ jobs:
           PROJECT_ID="cloudnetops-ai-513607"
           VM_NAME="cloudnetops-ai"
           VM_ZONE="asia-south1-a"
-          DEPLOY_USER="admeizodevelopment"
 
-          echo "Connecting to Google Cloud VM..."
+          echo "Checking GitHub Actions SSH identity..."
 
-          REMOTE_COMMAND="sudo -n -u ${DEPLOY_USER} bash -lc 'set -euo pipefail; cd /opt/cloudnetops-ai; git fetch origin main; git reset --hard origin/main; sudo -n docker compose config --quiet; sudo -n docker compose up --build -d --wait --wait-timeout 180; curl --fail --silent --show-error http://127.0.0.1:8000/health/ready'"
+          REMOTE_COMMAND='whoami; id; getent passwd "$(whoami)"'
 
           gcloud compute ssh "$VM_NAME" \
             --project="$PROJECT_ID" \
@@ -104,8 +104,3 @@ jobs:
             --tunnel-through-iap \
             --quiet \
             --command="$REMOTE_COMMAND"
-
-      # 7. Deployment completed
-      - name: Deployment completed
-        run: |
-          echo "CloudNetOps-AI deployment completed successfully."
