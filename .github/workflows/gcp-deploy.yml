@@ -5,7 +5,6 @@ on:
   push:
     branches:
       - main
-
   workflow_dispatch:
 
 permissions:
@@ -22,11 +21,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # Step 1: Validate GitHub repository variables
       - name: Validate deployment configuration
         shell: bash
         env:
-          PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
           VM_NAME: ${{ vars.GCP_VM_NAME }}
           VM_ZONE: ${{ vars.GCP_VM_ZONE }}
           DEPLOY_USER: ${{ vars.GCP_DEPLOY_USER }}
@@ -35,57 +32,43 @@ jobs:
         run: |
           set -euo pipefail
 
-          check_variable() {
-            local name="$1"
-            local value="$2"
-
-            if [[ -z "$value" ]]; then
-              echo "ERROR: GitHub variable $name is missing."
+          for name in VM_NAME VM_ZONE DEPLOY_USER WIF_PROVIDER SERVICE_ACCOUNT; do
+            if [[ -z "${!name}" ]]; then
+              echo "ERROR: GitHub variable for $name is missing."
               exit 1
             fi
-          }
+          done
 
-          check_variable GCP_PROJECT_ID "$PROJECT_ID"
-          check_variable GCP_VM_NAME "$VM_NAME"
-          check_variable GCP_VM_ZONE "$VM_ZONE"
-          check_variable GCP_DEPLOY_USER "$DEPLOY_USER"
-          check_variable GCP_WIF_PROVIDER "$WIF_PROVIDER"
-          check_variable GCP_SERVICE_ACCOUNT "$SERVICE_ACCOUNT"
+          echo "All required deployment variables are present."
 
-          echo "All six GitHub repository variables are configured."
-
-      # Step 2: Authenticate using Workload Identity Federation
       - name: Authenticate to Google Cloud using WIF
-        id: auth
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
           service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
 
-      # Step 3: Install Google Cloud CLI
       - name: Set up Google Cloud CLI
         uses: google-github-actions/setup-gcloud@v2
 
-      # Step 4: Verify Google Cloud authentication
       - name: Verify Google Cloud authentication
         shell: bash
         run: |
           set -euo pipefail
           gcloud auth list
-          gcloud config set project "${{ vars.GCP_PROJECT_ID }}"
-          gcloud projects describe "${{ vars.GCP_PROJECT_ID }}" \
+          gcloud config set project cloudnetops-ai-513607
+          gcloud projects describe cloudnetops-ai-513607 \
             --format="value(projectId)"
 
-      # Step 5: Deploy application through IAP SSH
       - name: Deploy application through IAP SSH
         shell: bash
         env:
-          PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
           VM_NAME: ${{ vars.GCP_VM_NAME }}
           VM_ZONE: ${{ vars.GCP_VM_ZONE }}
           DEPLOY_USER: ${{ vars.GCP_DEPLOY_USER }}
         run: |
           set -euo pipefail
+
+          PROJECT_ID="cloudnetops-ai-513607"
 
           REMOTE_COMMAND="sudo -n -u ${DEPLOY_USER} bash -lc 'set -euo pipefail; cd /opt/cloudnetops-ai; git fetch origin main; git reset --hard origin/main; sudo -n docker compose config --quiet; sudo -n docker compose up --build -d --wait --wait-timeout 180; curl --fail --silent --show-error http://127.0.0.1:8000/health/ready'"
 
@@ -96,7 +79,5 @@ jobs:
             --quiet \
             --command="$REMOTE_COMMAND"
 
-      # Step 6: Deployment result
       - name: Deployment completed
-        run: |
-          echo "CloudNetOps-AI deployment completed successfully."
+        run: echo "CloudNetOps-AI deployment completed successfully."
