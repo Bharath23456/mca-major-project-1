@@ -21,6 +21,11 @@
   model explanations are sample-level, and results do not prove root cause.
 - Missing and stale metrics are not imputed. Live anomaly scans return an
   explicit unavailable response when required measurements are missing.
+- Capacity forecasts use a simple linear extrapolation of up to 24 hours of
+  telemetry. The chronological holdout error is descriptive only; no forecast
+  accuracy on a real monitoring deployment has been established. Warnings are
+  disabled unless explicitly enabled and manually evaluated by an authorized
+  operator or administrator.
 - The optional GCP deployment guide is documentation only. No GCP resources
   have been provisioned or verified.
 - SQLite and a single host are suitable for coursework and local demos, not

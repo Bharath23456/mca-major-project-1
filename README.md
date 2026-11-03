@@ -56,7 +56,11 @@ The sign-in page also offers self-registration for read-only `VIEWER` accounts;
 register with a username, email, and password of at least 12 characters, then
 sign in with either your username or email. Use the first-admin setup command
 above to create an administrator; public registration cannot grant elevated
-roles.
+roles. The copied local `.env.example` selects `CAPTCHA_MODE=test` for
+loopback-only development. Before exposing the app beyond local development,
+configure Google reCAPTCHA v2 using `CAPTCHA_MODE=recaptcha`,
+`RECAPTCHA_SITE_KEY`, and `RECAPTCHA_SECRET_KEY`. Never use test mode on a
+shared or public deployment.
 
 ### Ubuntu/Linux
 
@@ -101,19 +105,26 @@ their data; use that only when you intentionally want a clean reset.
   file is absent. Its training and evaluation data are synthetic and clearly
   labelled as such.
 - Argon2id-backed authentication, expiring server-side sessions, CSRF
-  protection, login throttling, and ADMIN/OPERATOR/VIEWER backend permissions.
-- Role-aware dashboard for real Prometheus metrics, targets, alerts, anomaly
-  findings, diagnostics, model status, incidents, user administration, and
-  audit history. Unavailable telemetry remains unknown/unavailable, never zero.
+  protection, login throttling, backend-verified Google reCAPTCHA v2 (with an
+  explicit local-only test mode), and ADMIN/OPERATOR/VIEWER backend permissions.
+- Responsive, role-aware dashboard for real Prometheus metrics, targets, alerts,
+  anomaly findings, diagnostics, read-only runtime settings, model status,
+  incidents, user administration, and audit history. Unavailable telemetry
+  remains unknown/unavailable, never zero.
 - Hybrid threshold and Isolation Forest event history, rule-based alert
   correlation, evidence-backed diagnostic suggestions, and incident workflows
   with assignment, notes, acknowledgement, resolution, and audit history.
+- Explainable per-target CPU, memory, and disk forecasts based on a simple
+  linear trend over recent Prometheus data, including chronological holdout
+  error and a six-hour horizon. Warning-event generation is opt-in and
+  requires an ADMIN or OPERATOR action.
 - Alembic migrations preserve existing alert/anomaly data while adding
   authentication and incident tables.
 - Automated tests and GitHub Actions CI. Optional GCP instructions are
   provided, but no cloud resources are created or claimed as deployed.
 
 See [docs/architecture.md](docs/architecture.md),
+[docs/grafana-setup.md](docs/grafana-setup.md),
 [docs/database.md](docs/database.md),
 [docs/api.md](docs/api.md), [docs/ml-design.md](docs/ml-design.md),
 [docs/setup.md](docs/setup.md), [docs/testing.md](docs/testing.md),

@@ -59,3 +59,32 @@ trusted training process and protect the data volume from untrusted writes.
 Synthetic normal/anomaly rows are created by construction, so precision,
 recall, F1, and confusion-matrix results only describe that generated split.
 No real labeled incident dataset or production baseline has been supplied.
+
+## Resource capacity forecasting
+
+The Infrastructure dashboard's capacity table uses a dependency-free,
+ordinary least-squares linear trend for per-target CPU, memory, and disk
+utilization. Prometheus range queries collect up to 24 hours of data at
+two-minute steps. The model requires at least eight finite, in-range samples
+and rejects a latest sample older than ten minutes. Missing values are skipped;
+the endpoint reports insufficient or stale data rather than filling gaps.
+Forecasts cover six hours and show the observed current value, trend per hour,
+an estimate at the horizon, and time to 100% only if the positive trend reaches
+that level within the forecast horizon.
+
+When at least ten samples are available, a chronological holdout backtest fits
+on the first 80% (at least eight samples) and compares predictions against the
+remaining observed samples using mean absolute error. This is a lightweight
+historical comparison, not a validation of future or production accuracy. The
+model assumes recent linear behavior continues and does not model seasonality,
+scheduled jobs, changing workloads, or filesystem changes.
+
+Proactive events are disabled by default. Set
+`CAPACITY_FORECAST_WARNINGS_ENABLED=true` to enable the
+`POST /api/aiops/forecasts/capacity/warnings` action for ADMIN and OPERATOR
+roles. It records a warning anomaly only when the current value is below the
+configured threshold and the six-hour estimate reaches or exceeds it. Duplicate
+target/metric warnings are suppressed for 24 hours. Forecasting does not
+automatically create an incident or perform remediation. Synthetic forecast
+tests are separate from evaluation on collected Prometheus metrics; actual
+host accuracy has not yet been established.

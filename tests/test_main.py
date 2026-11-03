@@ -33,7 +33,11 @@ def client() -> Iterator[TestClient]:
             session.refresh(user)
         login = test_client.post(
             "/api/auth/login",
-            json={"username": user.username, "password": TEST_CREDENTIAL},
+            json={
+                "username": user.username,
+                "password": TEST_CREDENTIAL,
+                "captcha_token": "cloudnetops-local-captcha-test-token",
+            },
         )
         assert login.status_code == 200
         test_client.headers["X-CSRF-Token"] = login.json()["csrf_token"]
@@ -84,6 +88,23 @@ def test_readiness_returns_ready_when_dependencies_respond(
         "status": "ready",
         "checks": {"database": "ok", "prometheus": "ok"},
     }
+
+
+def test_diagnostics_return_stored_evidence_when_prometheus_is_unavailable(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def unavailable() -> dict:
+        raise main.HTTPException(status_code=503, detail="Prometheus query timed out.")
+
+    monkeypatch.setattr(main, "monitoring_summary", unavailable)
+    response = client.get("/api/aiops/diagnostics")
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["report"]["prometheus_available"] is False
+    assert result["report"]["logs"]["configured"] is False
+    assert result["report"]["logs"]["events"] == []
+    assert "Prometheus unavailable" in result["source"]
 
 
 def test_openapi_documents_health_endpoint(client: TestClient) -> None:
@@ -181,7 +202,19 @@ def test_config_validation_reports_thresholds(client: TestClient) -> None:
     response = client.get("/api/v1/config/validate")
 
     assert response.status_code == 200
-    assert response.json()["valid"] is True
+    result = response.json()
+    assert result["valid"] is True
+    assert result["incident_repeat_rules"] == {
+        "warning_count": 3,
+        "critical_count": 5,
+        "window_hours": 24,
+        "valid": True,
+    }
+    assert result["capacity_forecasting"] == {
+        "lookback_hours": 24,
+        "horizon_hours": 6,
+        "proactive_warnings_enabled": False,
+    }
 
 
 def test_aiops_overview_uses_fresh_prometheus_values(
@@ -247,6 +280,10 @@ def test_summary_marks_values_with_units_and_fresh_timestamps(
     assert cpu["value"] == 42
     assert cpu["unit"] == "percent"
     assert cpu["stale"] is False
+    assert cpu["labels"] == {"instance": "sample"}
+    assert result["diagnostic_metrics"]["cpu_percent"][0]["labels"] == {
+        "instance": "sample"
+    }
     assert result["targets"][0]["up"]["unit"] == "boolean"
 
 

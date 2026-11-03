@@ -6,6 +6,63 @@ const registerError = document.querySelector("#register-error");
 const registerButton = document.querySelector("#register-button");
 const registerPrompt = document.querySelector("#register-switch");
 const registrationMessage = document.querySelector("#registration-message");
+const captchaStatus = document.querySelector("#captcha-status");
+const captchaWidget = document.querySelector("#recaptcha-widget");
+const passwordToggle = document.querySelector("#password-toggle");
+const localTestCaptchaToken = "cloudnetops-local-captcha-test-token";
+let captchaConfig = null;
+let captchaWidgetId = null;
+let captchaReady = false;
+
+async function initializeCaptcha() {
+  try {
+    const response = await fetch("/api/auth/captcha-config", { cache: "no-store" });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.detail || "CAPTCHA configuration is unavailable.");
+    captchaConfig = result;
+
+    if (captchaConfig.mode === "test") {
+      captchaStatus.textContent =
+        "Local CAPTCHA test mode is active. Do not use this mode outside local development.";
+      captchaReady = true;
+      return;
+    }
+    if (captchaConfig.mode !== "recaptcha" || !captchaConfig.site_key) {
+      throw new Error("Google reCAPTCHA is not configured.");
+    }
+
+    await new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = "https://www.google.com/recaptcha/api.js?render=explicit";
+      script.async = true;
+      script.defer = true;
+      script.onload = resolve;
+      script.onerror = () => reject(new Error("Google reCAPTCHA could not be loaded."));
+      document.head.append(script);
+    });
+    await new Promise((resolve) => window.grecaptcha.ready(resolve));
+    captchaWidgetId = window.grecaptcha.render(captchaWidget, {
+      sitekey: captchaConfig.site_key,
+    });
+    captchaStatus.textContent = "Complete the reCAPTCHA checkbox to continue.";
+    captchaReady = true;
+  } catch (error) {
+    captchaStatus.textContent = error.message || "CAPTCHA initialization failed.";
+  }
+}
+
+function currentCaptchaToken() {
+  if (captchaConfig?.mode === "test") return localTestCaptchaToken;
+  if (captchaWidgetId === null || !window.grecaptcha) return "";
+  return window.grecaptcha.getResponse(captchaWidgetId);
+}
+
+passwordToggle.addEventListener("click", () => {
+  const visible = form.elements.password.type === "password";
+  form.elements.password.type = visible ? "text" : "password";
+  passwordToggle.textContent = visible ? "Hide" : "Show";
+  passwordToggle.setAttribute("aria-pressed", String(visible));
+});
 
 document.querySelector("#show-register").addEventListener("click", () => {
   form.hidden = true;
@@ -27,6 +84,17 @@ document.querySelector("#show-login").addEventListener("click", () => {
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   loginError.hidden = true;
+  if (!captchaReady) {
+    loginError.textContent = "CAPTCHA is not ready. Check the configuration and try again.";
+    loginError.hidden = false;
+    return;
+  }
+  const captchaToken = currentCaptchaToken();
+  if (!captchaToken) {
+    loginError.textContent = "Complete the reCAPTCHA checkbox before signing in.";
+    loginError.hidden = false;
+    return;
+  }
   loginButton.disabled = true;
   loginButton.textContent = "Signing in…";
 
@@ -37,6 +105,7 @@ form.addEventListener("submit", async (event) => {
       body: JSON.stringify({
         username: form.elements.username.value,
         password: form.elements.password.value,
+        captcha_token: captchaToken,
       }),
       cache: "no-store",
     });
@@ -47,6 +116,9 @@ form.addEventListener("submit", async (event) => {
     loginError.textContent = error.message || "Sign in failed. Please try again.";
     loginError.hidden = false;
   } finally {
+    if (captchaWidgetId !== null && window.grecaptcha) {
+      window.grecaptcha.reset(captchaWidgetId);
+    }
     loginButton.disabled = false;
     loginButton.textContent = "Sign in";
     form.elements.password.value = "";
@@ -93,3 +165,5 @@ registerForm.addEventListener("submit", async (event) => {
     registerButton.textContent = "Create account";
   }
 });
+
+initializeCaptcha();

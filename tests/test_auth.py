@@ -1,4 +1,5 @@
 from collections.abc import Iterator
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -6,15 +7,18 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, select
 
+from app import auth_routes
 from app.auth import (
     CSRF_COOKIE_NAME,
     SESSION_COOKIE_NAME,
     hash_password,
     hash_secret,
 )
+from app.captcha import LOCAL_TEST_CAPTCHA_MARKER
 from app.database import SessionLocal
 from app.main import app
 from app.models import AuditLog, User, UserSession
+from app.settings import settings
 
 TEST_CREDENTIAL = "test-credential-phrase-2026"
 
@@ -45,8 +49,20 @@ def auth_context() -> Iterator[tuple[TestClient, User, str]]:
             session.commit()
 
 
-def login(client: TestClient, username: str, password: str = TEST_CREDENTIAL):
-    return client.post("/api/auth/login", json={"username": username, "password": password})
+def login(
+    client: TestClient,
+    username: str,
+    password: str = TEST_CREDENTIAL,
+    captcha_token: str = LOCAL_TEST_CAPTCHA_MARKER,
+):
+    return client.post(
+        "/api/auth/login",
+        json={
+            "username": username,
+            "password": password,
+            "captcha_token": captcha_token,
+        },
+    )
 
 
 def test_public_registration_creates_viewer_who_can_sign_in() -> None:
@@ -128,6 +144,24 @@ def test_successful_login_uses_argon2_and_http_only_session_cookie(auth_context)
         assert auth_session.token_hash == hash_secret(response.cookies[SESSION_COOKIE_NAME])
 
 
+def test_login_sets_secure_cookie_when_configured(auth_context, monkeypatch) -> None:
+    client, user, _ = auth_context
+    monkeypatch.setattr(
+        auth_routes,
+        "settings",
+        replace(settings, session_cookie_secure=True),
+    )
+
+    response = login(client, user.username)
+
+    assert response.status_code == 200
+    cookies = response.headers.get_list("set-cookie")
+    assert any(
+        cookie.startswith(f"{SESSION_COOKIE_NAME}=") and "secure" in cookie.lower()
+        for cookie in cookies
+    )
+
+
 def test_wrong_and_unknown_credentials_return_same_message(auth_context) -> None:
     client, user, suffix = auth_context
 
@@ -137,6 +171,29 @@ def test_wrong_and_unknown_credentials_return_same_message(auth_context) -> None
     assert wrong.status_code == unknown.status_code == 401
     assert wrong.json() == unknown.json()
     assert "wrong-password" not in wrong.text
+
+
+def test_login_rejects_invalid_captcha_without_creating_a_session(auth_context) -> None:
+    client, user, _ = auth_context
+    invalid_captcha = "invalid-token"
+
+    response = login(client, user.username, captcha_token=invalid_captcha)
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "CAPTCHA verification failed."
+    assert SESSION_COOKIE_NAME not in response.cookies
+    with SessionLocal() as session:
+        assert session.scalar(
+            select(UserSession).where(UserSession.user_id == user.id)
+        ) is None
+
+
+def test_captcha_config_exposes_only_public_site_key() -> None:
+    with TestClient(app) as client:
+        response = client.get("/api/auth/captcha-config")
+
+    assert response.status_code == 200
+    assert response.json() == {"mode": "test", "site_key": ""}
 
 
 def test_disabled_user_cannot_login(auth_context) -> None:

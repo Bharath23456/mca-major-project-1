@@ -21,6 +21,7 @@ from app.auth import (
     validate_username,
     verify_password,
 )
+from app.captcha import CaptchaUnavailable, public_captcha_config, verify_captcha
 from app.database import get_session
 from app.models import LoginAttempt, User, UserSession
 from app.settings import settings
@@ -31,6 +32,7 @@ router = APIRouter(prefix="/api/auth", tags=["authentication"])
 class LoginRequest(BaseModel):
     username: str = Field(min_length=1, max_length=254)
     password: str = Field(min_length=1, max_length=128)
+    captcha_token: str = Field(min_length=1, max_length=8192)
 
 
 class RegistrationRequest(BaseModel):
@@ -196,8 +198,19 @@ def register(
     }
 
 
+@router.get("/captcha-config")
+def captcha_config() -> dict[str, str]:
+    try:
+        return public_captcha_config()
+    except CaptchaUnavailable as error:
+        raise HTTPException(
+            status_code=503,
+            detail="CAPTCHA is not configured correctly.",
+        ) from error
+
+
 @router.post("/login")
-def login(
+async def login(
     credentials: LoginRequest,
     request: Request,
     response: Response,
@@ -224,6 +237,34 @@ def login(
             status_code=429,
             detail="Too many failed sign-in attempts. Try again later.",
         )
+
+    try:
+        captcha_valid = await verify_captcha(credentials.captcha_token, _client_ip(request))
+    except CaptchaUnavailable as error:
+        raise HTTPException(
+            status_code=503,
+            detail="CAPTCHA verification is unavailable. Try again later.",
+        ) from error
+    if not captcha_valid:
+        session.execute(
+            delete(LoginAttempt).where(LoginAttempt.attempted_at < now - timedelta(days=1))
+        )
+        session.add_all(
+            [
+                LoginAttempt(key_hash=identity_key, attempted_at=now),
+                LoginAttempt(key_hash=ip_key, attempted_at=now),
+            ]
+        )
+        record_audit(
+            session,
+            user_id=None,
+            action="login_failed",
+            resource_type="authentication",
+            result="failure",
+            details={"reason": "captcha_failed"},
+        )
+        session.commit()
+        raise HTTPException(status_code=400, detail="CAPTCHA verification failed.")
 
     user = session.scalar(
         select(User).where(or_(User.username == identity, User.email == identity))

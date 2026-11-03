@@ -1,15 +1,16 @@
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.audit import record_audit
 from app.auth import require_roles
 from app.database import get_session
+from app.incidents import incident_priority_label, incident_priority_score
 from app.models import (
     AlertEvent,
     AnomalyEvent,
@@ -19,6 +20,7 @@ from app.models import (
     IncidentNote,
     User,
 )
+from app.settings import settings
 
 router = APIRouter(prefix="/api/incidents", tags=["incidents"])
 
@@ -55,6 +57,9 @@ def _serialize_event(session: Session, link: IncidentEvent) -> dict[str, object]
             "status": alert.status if alert else None,
             "severity": alert.severity if alert else None,
             "summary": alert.summary if alert else None,
+            "description": alert.description if alert else None,
+            "target": alert.instance if alert else None,
+            "labels": json.loads(alert.labels_json) if alert else {},
             "correlation_reason": link.correlation_reason,
             "created_at": _utc_iso(link.created_at),
         }
@@ -65,6 +70,9 @@ def _serialize_event(session: Session, link: IncidentEvent) -> dict[str, object]
         "name": anomaly.detector if anomaly else None,
         "severity": anomaly.severity if anomaly else None,
         "summary": anomaly.explanation if anomaly else None,
+        "target": anomaly.target or None if anomaly else None,
+        "score": anomaly.score if anomaly else None,
+        "model_status": anomaly.model_status if anomaly else None,
         "metrics": json.loads(anomaly.metrics_json) if anomaly else {},
         "correlation_reason": link.correlation_reason,
         "created_at": _utc_iso(link.created_at),
@@ -87,12 +95,41 @@ def _serialize_incident(
         .where(IncidentEvent.incident_id == incident.id)
         .order_by(IncidentEvent.created_at, IncidentEvent.id)
     ).all()
+    recent_target_incident_count = 0
+    if incident.affected_target:
+        recent_target_incident_count = int(
+            session.scalar(
+                select(func.count(Incident.id)).where(
+                    Incident.affected_target == incident.affected_target,
+                    Incident.created_at
+                    >= datetime.now(UTC)
+                    - timedelta(hours=settings.incident_repeat_window_hours),
+                )
+            )
+            or 0
+        )
+    priority_score = incident_priority_score(
+        incident.severity,
+        len(links),
+        recent_target_incident_count,
+    )
     result: dict[str, object] = {
         "id": incident.id,
         "title": incident.title,
         "severity": incident.severity,
         "status": incident.status,
         "affected_target": incident.affected_target,
+        "priority": incident_priority_label(priority_score),
+        "priority_score": priority_score,
+        "related_event_count": len(links),
+        "recent_target_incident_count": recent_target_incident_count,
+        "recent_target_incident_window_hours": settings.incident_repeat_window_hours,
+        "priority_rationale": (
+            "Heuristic based on event severity as an impact proxy, linked-event frequency, "
+            f"and {recent_target_incident_count} incident(s) for this target in the last "
+            f"{settings.incident_repeat_window_hours}h. No service dependency or "
+            "business-impact data is configured."
+        ),
         "assigned_operator": (
             {"id": assigned.id, "username": assigned.username} if assigned else None
         ),

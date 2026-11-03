@@ -15,6 +15,18 @@ strong `GRAFANA_ADMIN_PASSWORD` before using Grafana. Do not overwrite an
 existing `.env`; it may contain local credentials. Do not commit `.env`; it
 is ignored by Git.
 
+The example `.env` uses `CAPTCHA_MODE=test` for a loopback-only demo. For an
+externally reachable deployment, change it to `CAPTCHA_MODE=recaptcha` and
+provide a Google reCAPTCHA v2 checkbox `RECAPTCHA_SITE_KEY` and
+`RECAPTCHA_SECRET_KEY`. The login endpoint rejects missing/invalid tokens and
+returns a service error if verification cannot be configured or reached. Do
+not use test mode outside local development.
+
+When upgrading an existing deployment, add `CAPTCHA_MODE` to its existing
+`.env` before restarting. Use `test` only for local loopback demonstrations;
+otherwise configure `recaptcha` and both keys. The Compose default is
+`recaptcha`, and the app fails startup when the required keys are absent.
+
 Windows PowerShell:
 
 ```powershell
@@ -93,6 +105,9 @@ API anomaly-rule thresholds are configured by the `CPU_THRESHOLD_PERCENT`,
 `MEMORY_THRESHOLD_PERCENT`, and `DISK_THRESHOLD_PERCENT` environment
 variables. Change them in `docker-compose.yml` or add them to `.env` and
 recreate the app container with `docker compose up -d --force-recreate app`.
+`SESSION_COOKIE_SECURE=true` enables the Secure cookie attribute and is the
+Compose default. The copied `.env.example` sets `false` only for the local
+loopback HTTP demo; set it to `true` for HTTPS.
 
 ## Useful operational commands
 
@@ -113,6 +128,8 @@ Prometheus history.
 Python 3.12 is the supported/documented local development version:
 
 ```powershell
+$env:CAPTCHA_MODE = "test"
+$env:SESSION_COOKIE_SECURE = "false"
 py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements-dev.txt
@@ -121,7 +138,9 @@ python -m uvicorn app.main:app --reload
 ```
 
 On Ubuntu/Linux replace the venv creation with
-`python3.12 -m venv .venv` and activate using `source .venv/bin/activate`.
+`python3.12 -m venv .venv`, activate using `source .venv/bin/activate`, and
+set `export CAPTCHA_MODE=test` and `export SESSION_COOKIE_SECURE=false` for
+local development.
 Without a separately running Prometheus service, monitoring queries return an
 explicit unavailable/degraded state rather than simulated live values.
 

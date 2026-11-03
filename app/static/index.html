@@ -8,14 +8,21 @@
     <link rel="stylesheet" href="/static/styles.css">
   </head>
   <body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
     <header class="topbar">
       <a class="brand" href="/" aria-label="CloudNetOps-AI home">
         <span class="brand-mark" aria-hidden="true">CN</span>
         <span>CloudNetOps<span class="brand-accent">-AI</span></span>
       </a>
       <div class="topbar-actions">
-        <span id="user-info" class="unit-label"></span>
-        <span id="service-status" class="status-chip status-unknown">Connecting</span>
+        <div class="user-identity" aria-label="Signed-in user">
+          <span id="user-avatar" class="user-avatar" aria-hidden="true">CN</span>
+          <span class="user-identity-text">
+            <span id="user-info" class="user-name">Loading user…</span>
+            <span id="user-role" class="user-role">Checking access</span>
+          </span>
+        </div>
+        <span id="service-status" class="status-chip status-unknown" role="status" aria-live="polite">Connecting</span>
         <button id="refresh-button" class="button" type="button">Refresh</button>
         <button id="logout-button" class="button" type="button">Sign out</button>
       </div>
@@ -28,7 +35,8 @@
         <div class="sidebar-footer">Local-first · Read-only monitoring</div>
       </aside>
 
-      <main class="page">
+      <main class="page" id="main-content">
+        <p id="page-loading" class="page-loading" role="status" aria-live="polite" hidden></p>
         <section class="page-view" data-view="overview">
           <section class="page-heading">
             <div>
@@ -38,7 +46,13 @@
             </div>
             <p id="last-updated" class="last-updated">Waiting for first refresh</p>
           </section>
-          <section class="metric-grid" id="overview-cards" aria-label="Current infrastructure metrics"></section>
+          <section class="metric-grid" id="overview-cards" aria-label="Current infrastructure metrics" aria-live="polite" aria-busy="true">
+            <article class="metric-card loading-card"><span class="skeleton-line"></span><span class="skeleton-line skeleton-value"></span><span class="skeleton-line skeleton-short"></span></article>
+            <article class="metric-card loading-card"><span class="skeleton-line"></span><span class="skeleton-line skeleton-value"></span><span class="skeleton-line skeleton-short"></span></article>
+            <article class="metric-card loading-card"><span class="skeleton-line"></span><span class="skeleton-line skeleton-value"></span><span class="skeleton-line skeleton-short"></span></article>
+            <article class="metric-card loading-card"><span class="skeleton-line"></span><span class="skeleton-line skeleton-value"></span><span class="skeleton-line skeleton-short"></span></article>
+            <article class="metric-card loading-card"><span class="skeleton-line"></span><span class="skeleton-line skeleton-value"></span><span class="skeleton-line skeleton-short"></span></article>
+          </section>
           <div class="two-column">
             <section class="panel">
               <div class="panel-heading">
@@ -66,7 +80,7 @@
           </div>
           <section class="panel">
             <div class="panel-heading"><div><p class="eyebrow">INCIDENT MANAGEMENT</p><h2>Open incidents</h2></div><a class="text-link" href="#/incidents">View incidents</a></div>
-            <div class="table-wrap"><table><thead><tr><th>ID</th><th>Incident</th><th>Severity</th><th>Target</th><th>Status</th><th>Updated</th></tr></thead><tbody id="overview-incident-rows"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody></table></div>
+            <div class="table-wrap"><table><thead><tr><th>ID</th><th>Incident</th><th>Severity</th><th>Priority</th><th>Target</th><th>Status</th><th>Updated</th></tr></thead><tbody id="overview-incident-rows"><tr><td colspan="7" class="empty">Loading…</td></tr></tbody></table></div>
           </section>
         </section>
 
@@ -74,10 +88,19 @@
           <div class="page-heading"><div><p class="eyebrow">PROMETHEUS TELEMETRY</p><h1>Infrastructure</h1><p class="muted">Current host utilization and recent trends.</p></div></div>
           <section id="infrastructure-cards" class="metric-grid"></section>
           <div class="chart-grid">
-            <section class="panel"><div class="panel-heading"><h2>CPU utilization</h2><span class="unit-label">percent</span></div><div class="chart-wrap"><canvas id="chart-cpu"></canvas><p class="chart-message"></p></div></section>
-            <section class="panel"><div class="panel-heading"><h2>Memory utilization</h2><span class="unit-label">percent</span></div><div class="chart-wrap"><canvas id="chart-memory"></canvas><p class="chart-message"></p></div></section>
-            <section class="panel"><div class="panel-heading"><h2>Disk utilization</h2><span class="unit-label">percent</span></div><div class="chart-wrap"><canvas id="chart-disk"></canvas><p class="chart-message"></p></div></section>
+            <section class="panel"><div class="panel-heading"><h2>CPU utilization</h2><span class="unit-label">percent</span></div><div class="chart-wrap"><canvas id="chart-cpu" aria-label="CPU utilization trend"></canvas><p class="chart-message"></p></div></section>
+            <section class="panel"><div class="panel-heading"><h2>Memory utilization</h2><span class="unit-label">percent</span></div><div class="chart-wrap"><canvas id="chart-memory" aria-label="Memory utilization trend"></canvas><p class="chart-message"></p></div></section>
+            <section class="panel"><div class="panel-heading"><h2>Disk utilization</h2><span class="unit-label">percent</span></div><div class="chart-wrap"><canvas id="chart-disk" aria-label="Disk utilization trend"></canvas><p class="chart-message"></p></div></section>
           </div>
+          <section class="panel">
+            <div class="panel-heading">
+              <div><p class="eyebrow">CAPACITY PLANNING</p><h2>Six-hour resource forecast</h2></div>
+              <button id="forecast-warning-button" class="button" type="button" hidden>Evaluate capacity warnings</button>
+            </div>
+            <p id="capacity-forecast-summary" class="muted">Loading historical Prometheus samples…</p>
+            <div class="table-wrap"><table><thead><tr><th>Resource</th><th>Target</th><th>Current</th><th>Trend/hour</th><th>Six-hour estimate</th><th>Exhaustion</th><th>Holdout MAE</th></tr></thead><tbody id="capacity-forecast-rows"><tr><td colspan="7" class="empty">Loading forecasts…</td></tr></tbody></table></div>
+            <p class="footnote">Simple linear extrapolation from up to 24 hours of data; estimates are not production accuracy claims. Missing or stale samples are not forecast.</p>
+          </section>
           <section class="panel"><div class="panel-heading"><div><p class="eyebrow">TARGET HEALTH</p><h2>Scrape targets</h2></div></div><div class="table-wrap"><table><thead><tr><th>Job</th><th>Target</th><th>Status</th><th>Sample time</th></tr></thead><tbody id="infrastructure-target-rows"></tbody></table></div></section>
         </section>
 
@@ -85,22 +108,35 @@
           <div class="page-heading"><div><p class="eyebrow">NETWORK AND PROBES</p><h1>Network monitoring</h1><p class="muted">Traffic and HTTP probe data sourced from Prometheus.</p></div></div>
           <section id="network-cards" class="metric-grid"></section>
           <div class="two-column">
-            <section class="panel"><div class="panel-heading"><h2>Receive rate</h2><span class="unit-label">bytes/second</span></div><div class="chart-wrap"><canvas id="chart-receive"></canvas><p class="chart-message"></p></div></section>
-            <section class="panel"><div class="panel-heading"><h2>Transmit rate</h2><span class="unit-label">bytes/second</span></div><div class="chart-wrap"><canvas id="chart-transmit"></canvas><p class="chart-message"></p></div></section>
+            <section class="panel"><div class="panel-heading"><h2>Receive rate</h2><span class="unit-label">bytes/second</span></div><div class="chart-wrap"><canvas id="chart-receive" aria-label="Network receive rate trend"></canvas><p class="chart-message"></p></div></section>
+            <section class="panel"><div class="panel-heading"><h2>Transmit rate</h2><span class="unit-label">bytes/second</span></div><div class="chart-wrap"><canvas id="chart-transmit" aria-label="Network transmit rate trend"></canvas><p class="chart-message"></p></div></section>
           </div>
           <section class="panel"><div class="panel-heading"><div><p class="eyebrow">BLACKBOX EXPORTER</p><h2>Endpoint availability</h2></div></div><div class="table-wrap"><table><thead><tr><th>Endpoint</th><th>Availability</th><th>Latency</th><th>HTTP status</th><th>Sample time</th></tr></thead><tbody id="network-endpoint-rows"></tbody></table></div></section>
         </section>
 
         <section class="page-view" data-view="anomalies" hidden>
-          <div class="page-heading"><div><p class="eyebrow">HYBRID DETECTION</p><h1>Anomalies and diagnostics</h1><p class="muted">Threshold rules and Isolation Forest findings are identified separately.</p></div><button id="scan-button" class="button" type="button">Analyze current metrics</button></div>
+          <div class="page-heading"><div><p class="eyebrow">HYBRID DETECTION</p><h1>Anomaly detection</h1><p class="muted">Threshold rules and Isolation Forest findings are identified separately.</p></div><button id="scan-button" class="button" type="button">Analyze current metrics</button></div>
           <section class="panel"><div class="panel-heading"><div><p class="eyebrow">MODEL STATUS</p><h2 id="anomaly-model-summary">Loading…</h2></div></div><p id="anomaly-model-note" class="muted"></p></section>
-          <section class="panel"><div class="panel-heading"><div><p class="eyebrow">EVIDENCE</p><h2>Probable-cause suggestions</h2></div></div><div id="diagnostic-list" class="suggestion-list"></div></section>
+          <section class="panel"><div class="panel-heading"><div><p class="eyebrow">EVIDENCE</p><h2>Diagnostic suggestions</h2></div><a class="text-link" href="#/diagnostics">Open diagnostics</a></div><div id="diagnostic-list" class="suggestion-list"></div></section>
           <section class="panel"><div class="panel-heading"><div><p class="eyebrow">EVENT HISTORY</p><h2>Detected anomalies</h2></div><input id="anomaly-search" class="search-input" type="search" placeholder="Filter source, target or text" aria-label="Filter anomalies"></div><div class="table-wrap"><table><thead><tr><th>Time</th><th>Source</th><th>Severity</th><th>Target</th><th>Score</th><th>Explanation and metric evidence</th></tr></thead><tbody id="anomaly-rows"></tbody></table></div></section>
+        </section>
+
+        <section class="page-view" data-view="diagnostics" hidden>
+          <div class="page-heading"><div><p class="eyebrow">EVIDENCE-BASED AIOPS</p><h1>Diagnostics</h1><p class="muted">Observed signals and suggested investigations; correlation does not confirm root cause.</p></div></div>
+          <section class="panel">
+            <div class="panel-heading"><div><p class="eyebrow">CURRENT EVIDENCE</p><h2 id="diagnostic-status">Loading diagnostic evidence…</h2></div></div>
+            <p id="diagnostic-source" class="muted"></p>
+            <div id="diagnostic-report" class="diagnostic-report" aria-live="polite"></div>
+            <div class="diagnostic-suggestions">
+              <h3>Rule-based suggestions</h3>
+              <div id="diagnostic-page-list" class="suggestion-list" aria-live="polite"></div>
+            </div>
+          </section>
         </section>
 
         <section class="page-view" data-view="incidents" hidden>
           <div class="page-heading"><div><p class="eyebrow">OPERATIONS WORKFLOW</p><h1>Incident management</h1><p class="muted">Related alerts/anomalies are grouped for investigation; no automatic remediation is performed.</p></div></div>
-          <section class="panel"><div class="panel-heading"><h2>Incidents</h2><select id="incident-status-filter" class="search-input" aria-label="Filter incident status"><option value="">All statuses</option><option>OPEN</option><option>ACKNOWLEDGED</option><option>RESOLVED</option></select></div><div class="table-wrap"><table><thead><tr><th>ID</th><th>Incident</th><th>Severity</th><th>Target</th><th>Related events</th><th>First detected</th><th>Updated</th><th>Status</th><th>Assigned operator</th><th>Actions</th></tr></thead><tbody id="incident-rows"></tbody></table></div></section>
+          <section class="panel"><div class="panel-heading"><h2>Incidents</h2><select id="incident-status-filter" class="search-input" aria-label="Filter incident status"><option value="">All statuses</option><option>OPEN</option><option>ACKNOWLEDGED</option><option>RESOLVED</option></select></div><div class="table-wrap"><table><thead><tr><th>ID</th><th>Incident</th><th>Severity</th><th>Priority</th><th>Target</th><th>Related events</th><th>First detected</th><th>Updated</th><th>Status</th><th>Assigned operator</th><th>Actions</th></tr></thead><tbody id="incident-rows"></tbody></table></div></section>
           <section id="incident-detail" class="panel" hidden><div class="panel-heading"><div><p class="eyebrow">INCIDENT DETAILS</p><h2 id="incident-detail-title"></h2></div><button id="incident-close" class="button" type="button">Close</button></div><div id="incident-detail-content"></div></section>
         </section>
 
@@ -123,6 +159,16 @@
         <section class="page-view" data-view="audit" hidden>
           <div class="page-heading"><div><p class="eyebrow">GOVERNANCE</p><h1>Audit history</h1><p class="muted">Security-sensitive actions and their outcomes; secrets are excluded.</p></div></div>
           <section class="panel"><div class="panel-heading"><h2>Audit events</h2><div class="filter-row"><input id="audit-search" class="search-input" type="search" placeholder="Filter action/resource" aria-label="Filter audit events"><select id="audit-action-filter" class="search-input" aria-label="Filter by action"><option value="">All actions</option><option value="login_succeeded">Sign in</option><option value="login_failed">Failed sign in</option><option value="logout">Sign out</option><option value="user_create">User created</option><option value="user_role_update">Role changed</option><option value="user_status_update">User status changed</option></select></div></div><div class="table-wrap"><table><thead><tr><th>Time</th><th>User ID</th><th>Action</th><th>Resource</th><th>Result</th><th>Details</th></tr></thead><tbody id="audit-rows"></tbody></table></div></section>
+        </section>
+
+        <section class="page-view" data-view="settings" hidden>
+          <div class="page-heading"><div><p class="eyebrow">RUNTIME CONFIGURATION</p><h1>Settings</h1><p class="muted">Read-only validation of monitoring thresholds and configured probe targets.</p></div></div>
+          <section id="settings-cards" class="metric-grid" aria-live="polite"></section>
+          <section class="panel">
+            <div class="panel-heading"><div><p class="eyebrow">CONFIGURATION CHECKS</p><h2>Runtime status</h2></div></div>
+            <div id="settings-details" aria-live="polite"></div>
+            <p class="footnote">Secrets are not displayed here. Update environment variables or the authorized endpoint target file on the host, then restart the app or monitoring service as documented.</p>
+          </section>
         </section>
 
         <p id="page-error" class="page-error" role="status" hidden></p>

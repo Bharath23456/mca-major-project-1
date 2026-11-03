@@ -9,7 +9,12 @@ from sqlalchemy import delete, func, select
 
 from app.auth import hash_password
 from app.database import SessionLocal
-from app.incidents import correlate_alert_event, create_incident_from_anomaly
+from app.incidents import (
+    correlate_alert_event,
+    create_incident_from_anomaly,
+    incident_priority_label,
+    incident_priority_score,
+)
 from app.main import app
 from app.models import (
     AlertEvent,
@@ -43,7 +48,11 @@ def logged_in_user(role: str) -> Iterator[tuple[TestClient, int]]:
 
         response = client.post(
             "/api/auth/login",
-            json={"username": username, "password": "incident-test-credential-2026"},
+            json={
+                "username": username,
+                "password": "incident-test-credential-2026",
+                "captcha_token": "cloudnetops-local-captcha-test-token",
+            },
         )
         assert response.status_code == 200
         client.headers["X-CSRF-Token"] = response.json()["csrf_token"]
@@ -187,6 +196,50 @@ def test_same_sample_anomalies_correlate_and_do_not_duplicate_event_links() -> N
         )
         assert link_count == 2
     _cleanup_incidents(incident_ids, anomaly_ids=anomaly_ids)
+
+
+def test_repeated_alerts_escalate_severity_and_priority() -> None:
+    timestamp = datetime.now(UTC)
+    alert_ids: list[int] = []
+    incident_ids: list[int] = []
+    observed_severities: list[str] = []
+    with TestClient(app), SessionLocal() as session:
+        incident_id = None
+        for index in range(5):
+            detected_at = timestamp + timedelta(seconds=index)
+            alert = AlertEvent(
+                fingerprint=f"repeat-{uuid4().hex}",
+                alertname="HighMemoryUsage",
+                status="firing",
+                severity="info",
+                instance="api-repeating",
+                summary="Memory use is elevated",
+                starts_at=detected_at.isoformat(),
+                updated_at=detected_at,
+            )
+            session.add(alert)
+            session.flush()
+            alert_ids.append(alert.id)
+            incident = correlate_alert_event(session, alert, previous_status=None)
+            assert incident is not None
+            incident_id = incident.id
+            observed_severities.append(incident.severity)
+
+        assert incident_id is not None
+        incident_ids = [incident_id]
+        session.commit()
+        link_count = session.scalar(
+            select(func.count()).select_from(IncidentEvent).where(
+                IncidentEvent.incident_id == incident_id
+            )
+        )
+
+    assert observed_severities == ["info", "info", "warning", "warning", "critical"]
+    assert link_count == 5
+    score = incident_priority_score("warning", event_count=3, recent_target_incident_count=2)
+    assert score == 70
+    assert incident_priority_label(score) == "high"
+    _cleanup_incidents(incident_ids, alert_ids)
 
 
 def test_operator_incident_workflow_audits_actions_and_viewer_is_read_only() -> None:

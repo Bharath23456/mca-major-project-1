@@ -7,13 +7,29 @@ const pageDefinitions = [
   { id: "overview", label: "Overview" },
   { id: "infrastructure", label: "Infrastructure" },
   { id: "network", label: "Network" },
-  { id: "anomalies", label: "AI anomalies" },
+  { id: "anomalies", label: "Anomaly detection" },
+  { id: "diagnostics", label: "Diagnostics" },
   { id: "incidents", label: "Incidents" },
   { id: "alerts", label: "Alert history" },
   { id: "model", label: "Model status" },
   { id: "users", label: "User management", roles: ["ADMIN"] },
   { id: "audit", label: "Audit history", roles: ["ADMIN"] },
+  { id: "settings", label: "Settings" },
 ];
+
+const navigationIcons = {
+  overview: '<rect x="3" y="3" width="8" height="8" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="11" width="7" height="10" rx="1"/><rect x="3" y="14" width="8" height="7" rx="1"/>',
+  infrastructure: '<rect x="4" y="3" width="16" height="7" rx="1"/><rect x="4" y="14" width="16" height="7" rx="1"/><path d="M7 6.5h.01M7 17.5h.01M10 6.5h7M10 17.5h7"/>',
+  network: '<circle cx="6" cy="12" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="18" cy="18" r="2"/><path d="m8 11 8-4M8 13l8 4"/>',
+  anomalies: '<path d="M12 3 4 7v5c0 5 3.4 8 8 9 4.6-1 8-4 8-9V7l-8-4Z"/><path d="M12 8v5M12 16h.01"/>',
+  diagnostics: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5M8 10.5h5M10.5 8v5"/>',
+  incidents: '<path d="m12 3 9 17H3L12 3Z"/><path d="M12 9v5M12 17h.01"/>',
+  alerts: '<path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9ZM10 21h4"/>',
+  model: '<path d="M12 3v18M3 12h18"/><circle cx="12" cy="12" r="8"/><circle cx="12" cy="7" r="1"/><circle cx="17" cy="12" r="1"/><circle cx="12" cy="17" r="1"/><circle cx="7" cy="12" r="1"/>',
+  users: '<circle cx="9" cy="8" r="3"/><path d="M3 20v-1a6 6 0 0 1 12 0v1M16 5a3 3 0 0 1 0 6M18 14a5 5 0 0 1 3 5v1"/>',
+  audit: '<path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/>',
+  settings: '<circle cx="12" cy="12" r="3"/><path d="m19.4 15 .1.1 1.4 1.1-1.4 2.4-1.7-.7a8 8 0 0 1-1.7 1l-.3 1.8h-2.8l-.3-1.8a8 8 0 0 1-1.7-1l-1.7.7-1.4-2.4 1.4-1.1a7 7 0 0 1 0-2l-1.4-1.1 1.4-2.4 1.7.7a8 8 0 0 1 1.7-1l.3-1.8h2.8l.3 1.8a8 8 0 0 1 1.7 1l1.7-.7 1.4 2.4-1.4 1.1a7 7 0 0 1 0 2Z"/>',
+};
 
 const metricDefinitions = [
   { key: "cpu_percent", label: "CPU utilization", unit: "%", decimals: 1 },
@@ -114,7 +130,7 @@ function renderCards(container, definitions, summary) {
     const display = definition.unit
       ? metricText(value, definition)
       : value === null || value === undefined ? "Unknown" : String(value);
-    return `<article class="metric-card">
+    return `<article class="metric-card" data-status="${escapeHtml(status || "unknown")}">
       <div class="metric-name">${escapeHtml(definition.label)}</div>
       <div class="metric-value${status === "unknown" || status === "stale" ? " value-stale" : ""}">${escapeHtml(display)}</div>
       <div class="metric-detail">${statusPill(status)} ${escapeHtml(detail)}</div>
@@ -178,7 +194,7 @@ function renderOverviewCards(summary) {
         ? `${item.sample_count} fresh series · ${localTime(item.latest_timestamp)}`
         : item?.status === "stale" ? "Telemetry is stale" : "No fresh telemetry"
       : item?.detail || "";
-    return `<article class="metric-card">
+    return `<article class="metric-card" data-status="${escapeHtml(item?.status || "unknown")}">
       <div class="metric-name">${escapeHtml(definition.label)}</div>
       <div class="metric-value${["unknown", "stale"].includes(item?.status) ? " value-stale" : ""}">${escapeHtml(display)}</div>
       <div class="metric-detail">${statusPill(item?.status)} ${escapeHtml(detail)}</div>
@@ -196,7 +212,7 @@ function renderMetricGrid(container, summary, keys) {
     const detail = item?.sample_count
       ? `${item.sample_count} fresh series · ${localTime(item.latest_timestamp)}`
       : status === "stale" ? "Telemetry is stale" : "No fresh telemetry";
-    return `<article class="metric-card">
+    return `<article class="metric-card" data-status="${escapeHtml(status)}">
       <div class="metric-name">${escapeHtml(definition.label)}</div>
       <div class="metric-value${["unknown", "stale"].includes(status) ? " value-stale" : ""}">${escapeHtml(value)}</div>
       <div class="metric-detail">${statusPill(status)} ${escapeHtml(detail)}</div>
@@ -282,18 +298,64 @@ function renderSuggestions(suggestions, container) {
     </article>`).join("") : '<p class="empty">No evidence-based suggestions at this time.</p>';
 }
 
+function renderDiagnosticReport(report) {
+  const incidents = report?.incidents || [];
+  $("#diagnostic-report").innerHTML = `
+    <p class="diagnostic-report-meta">${escapeHtml(report?.notice || "Diagnostic evidence is unavailable.")}</p>
+    ${report?.prometheus_available === false
+      ? '<p class="diagnostic-source-warning">Prometheus is unavailable; this report uses stored application events only.</p>'
+      : ""}
+    ${incidents.length ? incidents.map((incident) => `
+      <article class="diagnostic-incident-card">
+        <div class="diagnostic-incident-heading">
+          <div><p class="eyebrow">${escapeHtml(incident.affected_target)}</p>
+            <h3>${escapeHtml(incident.incident_summary)}</h3></div>
+          <div>${statusPill(incident.severity)} <span class="pill pill-unknown">${escapeHtml(incident.evidence_level)}</span></div>
+        </div>
+        <p class="diagnostic-confidence">Evidence level: ${escapeHtml(incident.confidence?.level)} · ${escapeHtml(incident.confidence?.basis)}</p>
+        <div class="diagnostic-evidence-grid">
+          <section><h4>Related metrics</h4>
+            ${incident.related_metrics?.length
+              ? `<ul>${incident.related_metrics.map((item) => `<li>${escapeHtml(item.metric)}: ${escapeHtml(item.value)} ${escapeHtml(item.unit || "")} · ${escapeHtml(localTime(item.timestamp))}</li>`).join("")}</ul>`
+              : '<p class="muted">No fresh metric samples for this target.</p>'}
+          </section>
+          <section><h4>Alerts and anomalies</h4>
+            ${incident.related_alerts?.length || incident.related_anomalies?.length
+              ? `<ul>
+                ${(incident.related_alerts || []).map((item) => `<li>Alert: ${escapeHtml(item.name)} (${escapeHtml(item.severity)}) · ${escapeHtml(item.summary || "")}</li>`).join("")}
+                ${(incident.related_anomalies || []).map((item) => `<li>Anomaly: ${escapeHtml(item.detector)} (${escapeHtml(item.severity)}) · ${escapeHtml(item.explanation || "")}</li>`).join("")}
+              </ul>`
+              : '<p class="muted">No stored alert or anomaly events in this window.</p>'}
+          </section>
+        </div>
+        <h4>Possible contributing factors</h4>
+        <ul class="diagnostic-factor-list">${incident.possible_contributing_factors.map((factor) => `
+          <li><strong>${escapeHtml(factor.description)}</strong><span>${escapeHtml(JSON.stringify(factor.evidence))}</span></li>`).join("")}</ul>
+        <h4>Recommended investigation steps</h4>
+        <ol>${incident.recommended_investigation_steps.map((step) => `<li>${escapeHtml(step)}</li>`).join("")}</ol>
+        <p class="diagnostic-logs">${report.logs?.configured
+          ? `${escapeHtml(incident.log_events?.length || 0)} log event(s) available.`
+          : escapeHtml(report.logs?.note || "No log source is configured.")}</p>
+      </article>`).join("")
+      : '<p class="empty">No recent diagnostic evidence is available for this window.</p>'}`;
+}
+
 function drawLineChart(canvasId, points, unit, message = "Not enough fresh history yet") {
   const canvas = $(`#${canvasId}`);
   if (!canvas) return;
   const context = canvas.getContext("2d");
   const rect = canvas.getBoundingClientRect();
+  const hint = canvas.parentElement.querySelector(".chart-message");
+  if (!context) {
+    if (hint) hint.textContent = "Chart rendering is unavailable in this browser";
+    return;
+  }
   const ratio = window.devicePixelRatio || 1;
   canvas.width = Math.max(1, Math.floor(rect.width * ratio));
   canvas.height = Math.max(1, Math.floor(rect.height * ratio));
   context.setTransform(ratio, 0, 0, ratio, 0, 0);
   context.clearRect(0, 0, rect.width, rect.height);
   const valid = points.filter((point) => Number.isFinite(point.value));
-  const hint = canvas.parentElement.querySelector(".chart-message");
   if (valid.length < 2) {
     if (hint) hint.textContent = message;
     return;
@@ -327,6 +389,17 @@ function drawLineChart(canvasId, points, unit, message = "Not enough fresh histo
     else context.lineTo(x, y);
   });
   context.stroke();
+  const formatTime = (timestamp) => {
+    const date = new Date(timestamp);
+    return Number.isNaN(date.getTime())
+      ? ""
+      : date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  };
+  context.fillStyle = "#a4b2c5";
+  context.textAlign = "left";
+  context.fillText(formatTime(valid[0].timestamp), pad.left, rect.height - 4);
+  context.textAlign = "right";
+  context.fillText(formatTime(valid[valid.length - 1].timestamp), rect.width - pad.right, rect.height - 4);
 }
 
 async function renderHistory(canvasId, metric, unit = "percent") {
@@ -351,6 +424,14 @@ async function loadOverview() {
       ? `Updated ${localTime(data.infrastructure_health.collected_at)}`
       : "Telemetry unavailable";
   } else {
+    $("#overview-cards").innerHTML = `<article class="metric-card metric-card-unavailable">
+      <div class="metric-name">Live overview</div>
+      <div class="metric-value">Unavailable</div>
+      <div class="metric-detail">Prometheus overview could not be loaded</div>
+    </article>`;
+    $("#service-status").textContent = "Unavailable";
+    $("#service-status").className = "status-chip status-error";
+    $("#last-updated").textContent = "Telemetry unavailable";
     showError(`Overview unavailable: ${overview.reason.message}`);
   }
   if (diagnostics.status === "fulfilled") {
@@ -390,7 +471,55 @@ async function loadInfrastructure() {
     ["chart-memory", "memory_percent", "percent"],
     ["chart-disk", "disk_percent", "percent"],
   ];
-  await Promise.allSettled(requests.map(([canvas, metric, unit]) => renderHistory(canvas, metric, unit)));
+  await Promise.allSettled([
+    ...requests.map(([canvas, metric, unit]) => renderHistory(canvas, metric, unit)),
+    loadCapacityForecasts(),
+  ]);
+}
+
+function forecastNumber(value, suffix = "%") {
+  return Number.isFinite(value) ? `${value.toFixed(1)}${suffix}` : "—";
+}
+
+function renderCapacityForecasts(result) {
+  const rows = result.series || [];
+  $("#capacity-forecast-summary").textContent =
+    `Prometheus · ${result.lookback_hours}h observed · ${result.horizon_hours}h horizon · ` +
+    `generated ${localTime(result.generated_at)}. Historical holdout error is descriptive, not a guarantee.`;
+  $("#forecast-warning-button").hidden =
+    !result.warning_events_enabled || !["ADMIN", "OPERATOR"].includes(currentUser.role);
+  $("#capacity-forecast-rows").innerHTML = rows.length ? rows.map((item) => {
+    const forecast = item.forecast;
+    const backtest = forecast.backtest;
+    const status = forecast.status === "forecast_available"
+      ? ""
+      : ` <span class="cell-detail">${escapeHtml(forecast.message || forecast.status)}</span>`;
+    const exhaustion = forecast.time_to_exhaustion_hours === null
+      ? "Not projected within horizon"
+      : `${forecastNumber(forecast.time_to_exhaustion_hours, "h")}`;
+    return `<tr>
+      <td>${escapeHtml(item.metric.replace("_percent", ""))}${status}</td>
+      <td>${escapeHtml(item.target)}</td>
+      <td>${escapeHtml(forecastNumber(forecast.current_value_percent))}</td>
+      <td>${escapeHtml(forecastNumber(forecast.trend_percent_per_hour, "%/h"))}</td>
+      <td>${escapeHtml(forecastNumber(forecast.predicted_value_percent))}</td>
+      <td>${escapeHtml(exhaustion)}</td>
+      <td>${backtest
+        ? `${escapeHtml(forecastNumber(backtest.mean_absolute_error_percent))} · ${escapeHtml(backtest.actual_samples)} samples`
+        : "Not enough history"}</td>
+    </tr>`;
+  }).join("") : emptyRow(7, "No resource series are available from Prometheus");
+}
+
+async function loadCapacityForecasts() {
+  try {
+    const result = await getJson("/api/aiops/forecasts/capacity");
+    renderCapacityForecasts(result);
+  } catch (error) {
+    $("#capacity-forecast-summary").textContent = `Capacity forecasts unavailable: ${error.message}`;
+    $("#forecast-warning-button").hidden = true;
+    $("#capacity-forecast-rows").innerHTML = emptyRow(7, "Forecast data unavailable");
+  }
 }
 
 async function loadNetwork() {
@@ -420,12 +549,95 @@ async function loadAnomalies() {
   $("#anomaly-model-note").textContent = model.model_error || model.training_note;
 }
 
+async function loadDiagnosticsPage() {
+  const result = await getJson("/api/aiops/diagnostics");
+  $("#diagnostic-status").textContent = result.report?.status === "evidence_available"
+    ? "Evidence available"
+    : "No current evidence";
+  $("#diagnostic-source").textContent = `${result.source}. ${result.notice}`;
+  renderSuggestions(result.suggestions || [], "#diagnostic-page-list");
+  renderDiagnosticReport(result.report);
+}
+
+async function loadSettings() {
+  const configuration = await getJson("/api/v1/config/validate");
+  const targets = configuration.endpoint_targets || {};
+  const thresholds = configuration.configured_thresholds_percent || {};
+  const repeatRules = configuration.incident_repeat_rules || {};
+  const configurationCards = [
+    {
+      label: "Configuration",
+      get: () => ({
+        value: configuration.valid ? "Valid" : "Review required",
+        status: configuration.valid ? "healthy" : "critical",
+        detail: "Runtime validation",
+      }),
+    },
+    {
+      label: "Prometheus",
+      get: () => ({
+        value: configuration.prometheus_configured ? "Configured" : "Unavailable",
+        status: configuration.prometheus_configured ? "healthy" : "critical",
+        detail: "Query endpoint",
+      }),
+    },
+    {
+      label: "Probe targets",
+      get: () => ({
+        value: String(targets.count ?? 0),
+        status: targets.valid ? "healthy" : "warning",
+        detail: targets.valid ? "Authorized file-based targets" : "Target configuration needs review",
+      }),
+    },
+    {
+      label: "Incident recurrence",
+      get: () => ({
+        value: repeatRules.valid ? "Configured" : "Review rules",
+        status: repeatRules.valid ? "healthy" : "critical",
+        detail: `${repeatRules.warning_count ?? "?"}/${repeatRules.critical_count ?? "?"} repeats`,
+      }),
+    },
+  ];
+  renderCards("#settings-cards", configurationCards, configuration);
+
+  const rows = [
+    ["CPU threshold", `${thresholds.cpu_percent ?? "Unavailable"}%`],
+    ["Memory threshold", `${thresholds.memory_percent ?? "Unavailable"}%`],
+    ["Disk threshold", `${thresholds.disk_percent ?? "Unavailable"}%`],
+    ["Prometheus configuration", configuration.prometheus_configured ? "Valid HTTP(S) URL" : "Invalid URL"],
+    ["Probe target configuration", targets.valid ? `${targets.count ?? 0} target(s) validated` : "Validation errors found"],
+    ["Incident repeat rules", repeatRules.valid
+      ? `Warning at ${repeatRules.warning_count}; critical at ${repeatRules.critical_count} within ${repeatRules.window_hours}h`
+      : "Invalid repeat thresholds"],
+  ];
+  const errors = configuration.errors || [];
+  $("#settings-details").innerHTML = `
+    <dl class="configuration-list">${rows.map(([label, value]) => `
+      <div class="configuration-row"><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}
+    </dl>
+    ${errors.length
+      ? `<ul class="configuration-errors">${errors.map((error) => `<li>${escapeHtml(error)}</li>`).join("")}</ul>`
+      : '<p class="configuration-ok">No configuration errors reported.</p>'}`;
+}
+
 function renderIncidentSummary(incidents, container) {
   $(container).innerHTML = incidents.length ? incidents.map((incident) => `
     <tr><td>#${escapeHtml(incident.id)}</td><td>${escapeHtml(incident.title)}</td>
-      <td>${statusPill(incident.severity)}</td><td>${escapeHtml(incident.affected_target || "Unknown target")}</td>
+      <td>${statusPill(incident.severity)}</td><td>${priorityDisplay(incident)}</td>
+      <td>${escapeHtml(incident.affected_target || "Unknown target")}</td>
       <td>${statusPill(incident.status)}</td><td>${escapeHtml(localTime(incident.last_updated_at))}</td></tr>`).join("")
-    : emptyRow(6, "No incidents recorded");
+    : emptyRow(7, "No incidents recorded");
+}
+
+function priorityDisplay(incident) {
+  const priority = ["urgent", "high", "normal", "low"].includes(incident.priority)
+    ? incident.priority
+    : "unknown";
+  const repeats = Number(incident.recent_target_incident_count) || 0;
+  const repeatLabel = repeats === 1 ? "incident" : "incidents";
+  const repeatWindow = incident.recent_target_incident_window_hours || 24;
+  return `<span class="priority-label priority-${priority}">${escapeHtml(priority)} · ${escapeHtml(incident.priority_score ?? "—")}</span>
+    <span class="cell-detail">${repeats} target ${repeatLabel} in ${repeatWindow}h</span>`;
 }
 
 function renderIncidents(incidents) {
@@ -443,6 +655,7 @@ function renderIncidents(incidents) {
     return `<tr>
       <td><button class="text-button" data-action="details" data-id="${escapeHtml(incident.id)}">#${escapeHtml(incident.id)}</button></td>
       <td>${escapeHtml(incident.title)}</td><td>${statusPill(incident.severity)}</td>
+      <td>${priorityDisplay(incident)}</td>
       <td>${escapeHtml(incident.affected_target || "Unknown target")}</td>
       <td>${escapeHtml(incident.related_events?.length ?? 0)}</td>
       <td>${escapeHtml(localTime(incident.first_detected_at))}</td>
@@ -450,7 +663,7 @@ function renderIncidents(incidents) {
       <td>${escapeHtml(incident.assigned_operator?.username || "Unassigned")}</td>
       <td>${operatorControls}</td>
     </tr>`;
-  }).join("") : emptyRow(10, "No incidents match this filter");
+  }).join("") : emptyRow(11, "No incidents match this filter");
 }
 
 async function loadIncidents() {
@@ -535,29 +748,43 @@ async function loadAudit() {
 
 async function loadCurrentView() {
   clearError();
+  const activeView = document.querySelector(`.page-view[data-view="${currentView}"]`);
+  const loadingMessage = $("#page-loading");
+  activeView?.setAttribute("aria-busy", "true");
+  loadingMessage.textContent = `Loading ${pageDefinitions.find((page) => page.id === currentView)?.label || "page"}…`;
+  loadingMessage.hidden = false;
   try {
     if (currentView === "overview") await loadOverview();
     else if (currentView === "infrastructure") await loadInfrastructure();
     else if (currentView === "network") await loadNetwork();
     else if (currentView === "anomalies") await loadAnomalies();
+    else if (currentView === "diagnostics") await loadDiagnosticsPage();
     else if (currentView === "incidents") await loadIncidents();
     else if (currentView === "alerts") await loadAlerts();
     else if (currentView === "model") await loadModelStatus();
     else if (currentView === "users") await loadUsers();
     else if (currentView === "audit") await loadAudit();
+    else if (currentView === "settings") await loadSettings();
   } catch (error) {
     if (error.status === 401) {
       window.location.assign("/login");
       return;
     }
     showError(`${pageDefinitions.find((page) => page.id === currentView)?.label || "Page"} failed to load: ${error.message}`);
+  } finally {
+    activeView?.setAttribute("aria-busy", "false");
+    loadingMessage.hidden = true;
   }
 }
 
 function renderNavigation() {
   const pages = pageDefinitions.filter((page) => !page.roles || page.roles.includes(currentUser.role));
-  $("#primary-nav").innerHTML = pages.map((page) =>
-    `<a class="nav-link${currentView === page.id ? " active" : ""}" href="#/${page.id}">${escapeHtml(page.label)}</a>`).join("");
+  $("#primary-nav").innerHTML = pages.map((page) => `
+    <a class="nav-link${currentView === page.id ? " active" : ""}" href="#/${page.id}"
+      ${currentView === page.id ? 'aria-current="page"' : ""}>
+      <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24">${navigationIcons[page.id]}</svg></span>
+      <span>${escapeHtml(page.label)}</span>
+    </a>`).join("");
   document.querySelectorAll(".page-view").forEach((view) => {
     view.hidden = view.dataset.view !== currentView;
   });
@@ -585,7 +812,10 @@ async function initializeDashboard() {
     showError(`Authentication check failed: ${error.message}`);
     return;
   }
-  $("#user-info").textContent = `${currentUser.username} · ${currentUser.role}`;
+  $("#user-info").textContent = currentUser.username;
+  $("#user-avatar").textContent = currentUser.username.slice(0, 2).toUpperCase();
+  $("#user-role").textContent = currentUser.role;
+  $("#user-role").className = `user-role role-${currentUser.role.toLowerCase()}`;
   $("#scan-button").hidden = !["ADMIN", "OPERATOR"].includes(currentUser.role);
   const initialView = window.location.hash.replace(/^#\//, "") || "overview";
   await navigateTo(initialView, false);
@@ -615,6 +845,21 @@ $("#scan-button").addEventListener("click", async () => {
   } finally {
     button.disabled = false;
     button.textContent = "Analyze current metrics";
+  }
+});
+$("#forecast-warning-button").addEventListener("click", async () => {
+  const button = $("#forecast-warning-button");
+  button.disabled = true;
+  button.textContent = "Evaluating…";
+  try {
+    const result = await getJson("/api/aiops/forecasts/capacity/warnings", { method: "POST" });
+    button.textContent = `${result.created_count} warning(s) recorded`;
+    await loadAnomalies();
+  } catch (error) {
+    showError(`Capacity warning evaluation failed: ${error.message}`);
+    button.textContent = "Evaluate capacity warnings";
+  } finally {
+    button.disabled = false;
   }
 });
 $("#anomaly-search").addEventListener("input", () =>
@@ -710,8 +955,16 @@ document.addEventListener("click", async (event) => {
 function renderIncidentDetails(incident) {
   $("#incident-detail").hidden = false;
   $("#incident-detail-title").textContent = `#${incident.id} · ${incident.title}`;
-  const related = (incident.related_events || []).map((item) =>
-    `<li>${escapeHtml(item.event_type)} #${escapeHtml(item.event_id)} · ${escapeHtml(item.summary || item.correlation_reason || "")}</li>`).join("");
+  const related = (incident.related_events || []).map((item) => {
+    const evidence = [
+      item.summary,
+      item.correlation_reason ? `Correlation: ${item.correlation_reason}` : "",
+      item.metrics ? `Metrics: ${JSON.stringify(item.metrics)}` : "",
+      item.labels && Object.keys(item.labels).length ? `Labels: ${JSON.stringify(item.labels)}` : "",
+    ].filter(Boolean).join(" · ");
+    return `<li><strong>${escapeHtml(item.event_type)} #${escapeHtml(item.event_id)}</strong>
+      <span>${escapeHtml(evidence)}</span></li>`;
+  }).join("");
   const notes = (incident.notes || []).map((note) =>
     `<li>${escapeHtml(localTime(note.created_at))} · ${escapeHtml(note.author_username)}: ${escapeHtml(note.note)}</li>`).join("");
   const assignment = currentUser.role === "VIEWER" ? "" : `
@@ -725,6 +978,8 @@ function renderIncidentDetails(incident) {
     </form>`;
   $("#incident-detail-content").innerHTML = `
     <p>${statusPill(incident.status)} ${statusPill(incident.severity)} · Target: ${escapeHtml(incident.affected_target || "Unknown")}</p>
+    <p>${priorityDisplay(incident)}</p>
+    <p class="footnote">${escapeHtml(incident.priority_rationale || "")}</p>
     <p>First detected ${escapeHtml(localTime(incident.first_detected_at))} · Last updated ${escapeHtml(localTime(incident.last_updated_at))}</p>
     <h3>Related events</h3><ul class="incident-event-list">${related || "<li>No related events.</li>"}</ul>
     <h3>Incident notes</h3><ul class="incident-event-list">${notes || "<li>No notes.</li>"}</ul>

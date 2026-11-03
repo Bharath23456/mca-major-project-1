@@ -106,12 +106,15 @@ curl --fail http://127.0.0.1:8000/health
 docker compose exec app python -m app.auth_setup
 ```
 
-Set a unique Grafana password in `.env`, keep the generated webhook token in
-the ignored `secrets/` directory, and do not copy credentials into Git. The
-token is root-owned and readable only by the app/Alertmanager group (GID
-10001). The Compose ports stay bound to the VM's loopback interface. The
-bootstrap command prompts for the first application administrator; there is
-no seeded account.
+Set a unique Grafana password in `.env`, set `CAPTCHA_MODE=recaptcha` with the
+site and secret keys, and set `SESSION_COOKIE_SECURE=true` for the HTTPS
+deployment. Never deploy with the example's local CAPTCHA test mode or
+HTTP-only cookie setting. Keep the generated webhook token in the ignored
+`secrets/` directory, and do not copy credentials into Git. The token is
+root-owned and readable only by the app/Alertmanager group (GID 10001). The
+Compose ports stay bound to the VM's loopback interface. The bootstrap
+command prompts for the first application administrator; there is no seeded
+account.
 
 ## HTTPS and administration
 

@@ -11,8 +11,9 @@ List endpoints accept bounded `limit` and `offset` parameters.
 
 | Method and path | Purpose | Responses |
 |---|---|---|
+| `GET /api/auth/captcha-config` | Return the CAPTCHA mode and public reCAPTCHA site key, if configured. | `200`; `503` if reCAPTCHA mode is missing required configuration. |
 | `POST /api/auth/register` | Public registration with username, email, password, and confirmation; creates an active `VIEWER` account only. | `201`; validation failures return `422`, duplicate account identifiers return `409`, throttled attempts return `429`. |
-| `POST /api/auth/login` | Sign in with `username` (username or email) and `password`; sets session and CSRF cookies. | `200`; invalid credentials return a generic `401`; throttled attempts return `429`. |
+| `POST /api/auth/login` | Sign in with `username` (username or email), `password`, and the CAPTCHA response token; sets session and CSRF cookies only after server-side CAPTCHA verification. | `200`; invalid credentials return a generic `401`, failed CAPTCHA returns `400`, provider/configuration failure returns `503`, throttled attempts return `429`. |
 | `POST /api/auth/logout` | Revoke the current session and clear cookies. | Requires `X-CSRF-Token`; `200` after sign out. |
 | `GET /api/auth/me` | Return the authenticated user's identity and role. | `401` without a valid session. |
 
@@ -29,6 +30,15 @@ no default account or built-in password. Self-registration is open, but can
 only create read-only `VIEWER` accounts; an administrator must create or
 promote accounts to `OPERATOR` or `ADMIN`.
 
+The local `.env.example` explicitly uses `CAPTCHA_MODE=test`, which accepts
+only the application's documented local test token and does not contact
+Google. This mode is for loopback development only. For a real deployment,
+set `CAPTCHA_MODE=recaptcha` and configure the Google reCAPTCHA v2 checkbox
+site key and secret using `RECAPTCHA_SITE_KEY` and `RECAPTCHA_SECRET_KEY`.
+Only the public site key is returned to the browser. The backend verifies each
+login response with Google's siteverify endpoint; verification failures are
+rate-limited and audited without recording the token or secret.
+
 ## Health and metrics
 
 | Method and path | Purpose | Responses |
@@ -41,6 +51,18 @@ promote accounts to `OPERATOR` or `ADMIN`.
 | `GET /api/v1/metrics` | Current Prometheus measurements with timestamps, units, and stale flags. | `200` when Prometheus answers; `503` when it is unavailable. |
 | `GET /api/v1/targets` | Prometheus scrape-target status. | `200` with `healthy`, `degraded`, or `unavailable`; unavailable target data is an empty list plus a reason. |
 | `GET /api/v1/monitoring/history?metric=cpu_percent&hours=6` | Bounded time-series query; `hours` is 1–24. | `200` with samples or an empty series; `503` if Prometheus is unavailable. |
+
+## Capacity forecasting
+
+| Method and path | Access | Purpose and responses |
+|---|---|---|
+| `GET /api/aiops/forecasts/capacity` | Any authenticated role | Per-target CPU, memory, and disk linear forecasts from up to 24 hours of Prometheus samples; includes six-hour estimates, stale/insufficient-data states, and a chronological holdout error when enough history exists. Returns `503` if Prometheus is unavailable. |
+| `POST /api/aiops/forecasts/capacity/warnings` | ADMIN, OPERATOR | Explicitly evaluates configured forecast thresholds and stores deduplicated warning anomaly events. Returns `409` unless `CAPACITY_FORECAST_WARNINGS_ENABLED=true`; `503` if Prometheus is unavailable. |
+
+Warning generation is disabled by default and is an explicit action, not an
+automatic background process. The trend and historical holdout error are not
+production accuracy guarantees. Forecast events do not automatically create
+incidents or trigger remediation.
 
 `/api/v1/overview` communicates a degraded dependency as a successful response
 because it is specifically an operator overview. `/health/ready` and
@@ -75,7 +97,11 @@ $sample = @{
 $login = Invoke-RestMethod -Method Post `
   -Uri http://127.0.0.1:8000/api/auth/login `
   -ContentType "application/json" `
-  -Body (@{ username = "YOUR_USERNAME"; password = "YOUR_PASSWORD" } | ConvertTo-Json) `
+  -Body (@{
+    username = "YOUR_USERNAME"
+    password = "YOUR_PASSWORD"
+    captcha_token = "cloudnetops-local-captcha-test-token"
+  } | ConvertTo-Json) `
   -SessionVariable cloudnetopsSession
 $csrf = $login.csrf_token
 
@@ -86,9 +112,11 @@ Invoke-RestMethod -Method Post `
   -ContentType "application/json" -Body $sample
 ```
 
-Only `/api/v1/anomalies/score` uses the caller-provided sample; it does not
-represent live monitoring. The live scan route reads real Prometheus data and
-returns an explicit unavailable error when it cannot.
+The sample login token above works only when `CAPTCHA_MODE=test`; never use
+that token with `CAPTCHA_MODE=recaptcha`. Only `/api/v1/anomalies/score` uses
+the caller-provided sample; it does not represent live monitoring. The live
+scan route reads real Prometheus data and returns an explicit unavailable
+error when it cannot.
 
 ## Roles and administration
 
@@ -118,7 +146,7 @@ above.
 | `GET /api/aiops/overview` | Any authenticated role | Monitoring summary, active/critical alert counts, anomaly counts, latest findings, and model status. |
 | `GET /api/aiops/anomalies?severity=warning&source=rule&target=...` | Any authenticated role | Filter persisted findings; `limit` is 1–500 and `offset` is 0–10,000. |
 | `GET /api/aiops/correlations?limit=50` | Any authenticated role | Incident groupings and per-event correlation reasons; limit is 1–200. |
-| `GET /api/aiops/diagnostics` | Any authenticated role | Suggestions grounded in current Prometheus readings and stored events; may return unavailable when Prometheus cannot supply evidence. |
+| `GET /api/aiops/diagnostics` | Any authenticated role | Rule-based, target-grouped report with current metric, alert, and anomaly evidence; stored events remain available if Prometheus is down. Logs are explicitly marked unconfigured. |
 | `GET /api/aiops/model-status` | Any authenticated role | Model availability, type/version/schema, training metadata when present, and last inference status. |
 | `GET /api/aiops/history?days=30` | Any authenticated role | Stored anomaly counts/distribution and incident timeline; days is 1–365. |
 | `GET /api/incidents?status=OPEN&severity=critical&target=...&query=...` | Any authenticated role | Filter incident list; `limit` is 1–200 and `offset` is 0–10,000. |
@@ -133,8 +161,13 @@ Incident states are `OPEN`, `ACKNOWLEDGED`, and `RESOLVED`. Alert fingerprints
 are linked only once, preventing duplicate event relationships. Correlation is
 rule-based and uses target, metric family, timestamps, severity, and a
 configurable time window; it is not a definitive root-cause analysis.
-Anomaly scores are not probabilities. Diagnostic suggestions identify their
-evidence and never trigger automatic remediation.
+Each incident exposes linked-event evidence, a correlation reason, and a
+heuristic priority score using severity as an impact proxy, event frequency,
+and same-target recurrence. Configurable repeat-count rules raise severity at
+the configured warning and critical counts. The priority score is not a
+business-impact estimate. Anomaly scores are not probabilities. Diagnostic
+reports distinguish evidence from possible contributing factors and never
+claim a confirmed root cause or trigger automatic remediation.
 
 Audit records describe actions and results without storing passwords, session
 tokens, CSRF tokens, or the body of incident notes.

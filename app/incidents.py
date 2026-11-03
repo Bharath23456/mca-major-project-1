@@ -1,7 +1,7 @@
 import json
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.audit import record_audit
@@ -13,6 +13,26 @@ RELATED_FAMILY_PAIRS = {
     frozenset(("cpu", "response_time")),
     frozenset(("endpoint", "response_time")),
 }
+PRIORITY_BASE_SCORES = {"critical": 80, "warning": 55, "info": 30, "unknown": 15}
+
+
+def incident_priority_score(
+    severity: str, event_count: int, recent_target_incident_count: int = 0
+) -> int:
+    impact_proxy = PRIORITY_BASE_SCORES.get(severity, PRIORITY_BASE_SCORES["unknown"])
+    event_frequency = min(20, max(0, event_count - 1) * 5)
+    target_recurrence = min(10, max(0, recent_target_incident_count - 1) * 5)
+    return min(100, impact_proxy + event_frequency + target_recurrence)
+
+
+def incident_priority_label(score: int) -> str:
+    if score >= 90:
+        return "urgent"
+    if score >= 70:
+        return "high"
+    if score >= 40:
+        return "normal"
+    return "low"
 
 
 def _utc(value: datetime) -> datetime:
@@ -149,6 +169,24 @@ def _raise_severity(incident: Incident, severity: str) -> None:
         incident.severity = severity
 
 
+def _apply_repeat_severity(session: Session, incident: Incident) -> None:
+    event_count = int(
+        session.scalar(
+            select(func.count(IncidentEvent.id)).where(
+                IncidentEvent.incident_id == incident.id
+            )
+        )
+        or 0
+    )
+    if event_count >= settings.incident_repeat_critical_count:
+        incident.severity = "critical"
+    elif (
+        event_count >= settings.incident_repeat_warning_count
+        and SEVERITY_RANK.get(incident.severity, 0) < SEVERITY_RANK["warning"]
+    ):
+        incident.severity = "warning"
+
+
 def correlate_alert_event(
     session: Session,
     alert: AlertEvent,
@@ -222,6 +260,7 @@ def correlate_alert_event(
         )
     )
     session.flush()
+    _apply_repeat_severity(session, incident)
     record_audit(
         session,
         user_id=None,
@@ -285,6 +324,7 @@ def create_incident_from_anomaly(session: Session, event: AnomalyEvent) -> Incid
         )
     )
     session.flush()
+    _apply_repeat_severity(session, incident)
     record_audit(
         session,
         user_id=None,

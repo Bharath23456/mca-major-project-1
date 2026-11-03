@@ -1,3 +1,4 @@
+import math
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -294,6 +295,349 @@ def build_diagnostics(
             }
         )
     return suggestions
+
+
+def _parse_timestamp(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
+
+
+def build_diagnostic_report(
+    monitoring: dict[str, Any] | None,
+    alerts: list[dict[str, Any]],
+    anomalies: list[dict[str, Any]],
+    *,
+    cpu_threshold: float,
+    memory_threshold: float,
+    disk_threshold: float,
+    window_seconds: int,
+    generated_at: datetime | None = None,
+) -> dict[str, Any]:
+    now = generated_at or datetime.now(UTC)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
+    now = now.astimezone(UTC)
+    window_start = now - timedelta(seconds=window_seconds)
+    report_groups: dict[str, dict[str, Any]] = {}
+
+    def group_for(target: str | None) -> dict[str, Any]:
+        target_name = target or "aggregate (target unavailable)"
+        return report_groups.setdefault(
+            target_name,
+            {
+                "target": target_name,
+                "metrics": [],
+                "alerts": [],
+                "anomalies": [],
+                "factors": [],
+                "sources": set(),
+                "metric_factors": set(),
+            },
+        )
+
+    def is_recent(value: Any) -> bool:
+        timestamp = _parse_timestamp(value)
+        return timestamp is None or timestamp >= window_start
+
+    telemetry = monitoring or {}
+    diagnostic_metrics = telemetry.get("diagnostic_metrics") or {}
+    metric_thresholds = {
+        "cpu_percent": cpu_threshold,
+        "memory_percent": memory_threshold,
+        "disk_percent": disk_threshold,
+    }
+    critical_thresholds = {
+        "cpu_percent": 95.0,
+        "memory_percent": 97.0,
+        "disk_percent": 97.0,
+    }
+    for metric, samples in (telemetry.get("metrics") or {}).items():
+        samples = diagnostic_metrics.get(metric) or samples
+        if not isinstance(samples, list):
+            continue
+        for sample in samples:
+            if not isinstance(sample, dict) or sample.get("stale", True):
+                continue
+            value = sample.get("value")
+            if not isinstance(value, (int, float)) or not math.isfinite(value):
+                continue
+            timestamp = sample.get("timestamp")
+            if timestamp and not is_recent(timestamp):
+                continue
+            labels = sample.get("labels") or {}
+            target = labels.get("instance") or sample.get("target")
+            evidence = {
+                "metric": metric,
+                "value": value,
+                "unit": sample.get("unit"),
+                "timestamp": timestamp,
+                "labels": labels,
+            }
+            group = group_for(target)
+            group["metrics"].append(evidence)
+            group["sources"].add("Prometheus metrics")
+            threshold = metric_thresholds.get(metric)
+            if threshold is not None and value >= threshold:
+                severity = (
+                    "critical"
+                    if value >= critical_thresholds[metric]
+                    else "warning"
+                )
+                group["factors"].append(
+                    {
+                        "type": "resource_threshold",
+                        "metric": metric,
+                        "description": (
+                            f"{metric} reached {value:.1f}, at or above the configured "
+                            f"{threshold:.1f} threshold."
+                        ),
+                        "severity": severity,
+                        "evidence": [evidence],
+                    }
+                )
+                group["metric_factors"].add(metric)
+
+    for endpoint in telemetry.get("endpoints") or []:
+        target = endpoint.get("endpoint")
+        for key, metric in (
+            ("success", "probe_success"),
+            ("latency_seconds", "probe_duration_seconds"),
+            ("http_status_code", "probe_http_status_code"),
+        ):
+            sample = endpoint.get(key) or {}
+            value = sample.get("value")
+            if (
+                sample.get("stale", True)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or (sample.get("timestamp") and not is_recent(sample["timestamp"]))
+            ):
+                continue
+            evidence = {
+                "metric": metric,
+                "value": value,
+                "unit": sample.get("unit"),
+                "timestamp": sample.get("timestamp"),
+                "target": target,
+            }
+            group = group_for(target)
+            group["metrics"].append(evidence)
+            group["sources"].add("Prometheus probes")
+            if key == "success" and value == 0:
+                group["factors"].append(
+                    {
+                        "type": "endpoint_unavailable",
+                        "description": "The current endpoint probe reports failure.",
+                        "severity": "critical",
+                        "evidence": [evidence],
+                    }
+                )
+
+    for target_status in telemetry.get("targets") or []:
+        sample = target_status.get("up") or {}
+        if sample.get("stale", True) or sample.get("value") != 0:
+            continue
+        target = target_status.get("instance")
+        evidence = {
+            "metric": "up",
+            "value": sample.get("value"),
+            "timestamp": sample.get("timestamp"),
+            "job": target_status.get("job"),
+            "target": target,
+        }
+        group = group_for(target)
+        group["sources"].add("Prometheus target health")
+        group["factors"].append(
+            {
+                "type": "target_unavailable",
+                "description": "Prometheus reports this scrape target as unavailable.",
+                "severity": "critical",
+                "evidence": [evidence],
+            }
+        )
+
+    for alert in alerts:
+        alert_timestamp = alert.get("starts_at") or alert.get("updated_at")
+        if alert.get("status") != "firing" and not is_recent(alert_timestamp):
+            continue
+        target = alert.get("instance")
+        group = group_for(target)
+        group["alerts"].append(
+            {
+                "name": alert.get("alertname"),
+                "severity": alert.get("severity", "unknown"),
+                "status": alert.get("status"),
+                "summary": alert.get("summary"),
+                "timestamp": alert_timestamp,
+            }
+        )
+        group["sources"].add("Alertmanager")
+        if alert.get("status") == "firing":
+            group["factors"].append(
+                {
+                    "type": "firing_alert",
+                    "description": "Alertmanager has a currently firing alert for this target.",
+                    "severity": alert.get("severity", "unknown"),
+                    "evidence": [
+                        {
+                            "alert": alert.get("alertname"),
+                            "severity": alert.get("severity", "unknown"),
+                            "status": alert.get("status"),
+                            "summary": alert.get("summary"),
+                            "timestamp": alert_timestamp,
+                        }
+                    ],
+                }
+            )
+
+    for anomaly in anomalies:
+        timestamp = anomaly.get("timestamp")
+        if timestamp and not is_recent(timestamp):
+            continue
+        target = anomaly.get("target")
+        group = group_for(target)
+        group["anomalies"].append(
+            {
+                "id": anomaly.get("id"),
+                "detector": anomaly.get("detector"),
+                "severity": anomaly.get("severity", "unknown"),
+                "explanation": anomaly.get("explanation"),
+                "metrics": anomaly.get("metrics", {}),
+                "timestamp": timestamp,
+            }
+        )
+        group["sources"].add("Stored anomaly events")
+        group["factors"].append(
+            {
+                "type": "recorded_anomaly",
+                "description": (
+                    "A stored anomaly overlaps this diagnostic window; it is a signal "
+                    "for investigation, not a confirmed cause."
+                ),
+                "severity": anomaly.get("severity", "unknown"),
+                "evidence": [
+                    {
+                        "detector": anomaly.get("detector"),
+                        "severity": anomaly.get("severity", "unknown"),
+                        "metrics": anomaly.get("metrics", {}),
+                        "timestamp": timestamp,
+                    }
+                ],
+            }
+        )
+
+    severity_rank = {"critical": 4, "warning": 3, "info": 2, "unknown": 1}
+    reports = []
+    for group in report_groups.values():
+        grouped_factors: dict[tuple[str, str], dict[str, Any]] = {}
+        for factor in group["factors"]:
+            factor_type = factor["type"]
+            key = (
+                factor_type,
+                factor.get("metric", "") if factor_type == "resource_threshold" else "",
+            )
+            existing_factor = grouped_factors.get(key)
+            if existing_factor is None:
+                grouped_factors[key] = {**factor, "evidence": list(factor["evidence"])}
+                continue
+            existing_factor["evidence"].extend(factor["evidence"])
+            if severity_rank.get(factor.get("severity"), 1) > severity_rank.get(
+                existing_factor.get("severity"), 1
+            ):
+                existing_factor["severity"] = factor["severity"]
+            if factor_type == "resource_threshold" and (
+                factor["evidence"][0]["value"] > existing_factor["evidence"][0]["value"]
+            ):
+                existing_factor["description"] = factor["description"]
+        factors = list(grouped_factors.values())
+        if not factors:
+            continue
+        severities = [
+            factor.get("severity", "unknown")
+            for factor in factors
+        ]
+        severity = max(severities, key=lambda value: severity_rank.get(value, 1))
+        source_count = len(group["sources"])
+        evidence_level = (
+            "multiple_sources"
+            if source_count >= 3
+            else "correlated_sources"
+            if source_count == 2
+            else "single_source"
+        )
+        metric_names = sorted(
+            {
+                item["metric"]
+                for item in group["metrics"]
+                if item["metric"] in group["metric_factors"]
+            }
+        )
+        recommendations = [
+            "Compare the observed signals with the same target's recent metric history.",
+            "Check recent deployments, configuration changes, and workload changes.",
+            "Confirm service impact with the service owner before taking corrective action.",
+        ]
+        if "endpoint_unavailable" in {factor["type"] for factor in group["factors"]}:
+            recommendations.insert(
+                0, "Verify DNS, TLS, endpoint health, and the network path from the probe."
+            )
+        if metric_names:
+            recommendations.insert(
+                0, f"Inspect the affected resource metrics: {', '.join(metric_names)}."
+            )
+        reports.append(
+            {
+                "incident_summary": (
+                    f"Observed {len(group['factors'])} diagnostic signal(s) for "
+                    f"{group['target']}; these observations do not confirm root cause."
+                ),
+                "affected_target": group["target"],
+                "severity": severity,
+                "related_metrics": group["metrics"],
+                "related_alerts": group["alerts"],
+                "related_anomalies": group["anomalies"],
+                "possible_contributing_factors": factors,
+                "recommended_investigation_steps": recommendations,
+                "log_events": [],
+                "evidence_level": evidence_level,
+                "confidence": {
+                    "level": evidence_level,
+                    "basis": f"{source_count} observed source type(s); not a probability.",
+                },
+                "timestamp": now.isoformat(),
+            }
+        )
+
+    reports.sort(
+        key=lambda item: severity_rank.get(item["severity"], 1),
+        reverse=True,
+    )
+    return {
+        "status": "evidence_available" if reports else "no_evidence",
+        "timestamp": now.isoformat(),
+        "window": {
+            "start": window_start.isoformat(),
+            "end": now.isoformat(),
+            "seconds": window_seconds,
+        },
+        "prometheus_available": monitoring is not None,
+        "logs": {
+            "configured": False,
+            "source": None,
+            "events": [],
+            "note": "No log source is configured; log analysis is not active.",
+        },
+        "incidents": reports,
+        "notice": (
+            "Reports summarize observed evidence and correlations only. They are not "
+            "confirmed root causes or forecasts."
+        ),
+    }
 
 
 def build_historical_analysis(

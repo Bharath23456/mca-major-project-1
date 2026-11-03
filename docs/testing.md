@@ -25,7 +25,9 @@ The anomaly evaluation constructs an independent deterministic test split
 containing generated normal and deliberately unusual rows. Precision, recall,
 F1, and the confusion matrix are calculated at runtime by scikit-learn. They
 describe only this synthetic distribution; they are not performance
-measurements on a real cloud host.
+measurements on a real cloud host. Authentication tests cover local CAPTCHA
+test-mode acceptance, backend rejection, Google siteverify success/failure,
+and sanitized provider-unavailable handling.
 
 ## Results record
 
@@ -33,6 +35,8 @@ The following results are from this implementation run. The API tests ran in
 the repository virtual environment; an isolated Compose project used separate
 ports and volumes from any pre-existing stack. Docker Desktop's Node Exporter
 metrics describe its Linux environment, not native Windows host measurements.
+T-01 through T-03 were executed after the Stage 2 changes below; T-04 through
+T-09 are earlier integration results and were not repeated in this stage.
 
 Verification environment: Windows, project interpreter Python 3.15.2,
 application container Python 3.12.16, Docker Engine 29.9.2, and Docker Compose
@@ -40,19 +44,22 @@ application container Python 3.12.16, Docker Engine 29.9.2, and Docker Compose
 
 | Test ID | Objective | Procedure | Expected result | Actual result | Pass/fail |
 |---|---|---|---|---|---|
-| T-01 | API, authentication, authorization, AIOps, incidents, and migrations | `python -m pytest -q` | All tests pass | 50 passed; one Starlette/httpx deprecation warning | Pass |
-| T-02 | Python and dashboard JavaScript checks | `ruff check app tests`; `node --check app\static\dashboard.js`; `git diff --check` | No lint, syntax, or whitespace errors | All checks passed | Pass |
-| T-03 | Compose configuration | `docker compose config --quiet` | Compose config parses | Exit code 0 | Pass |
+| T-01 | API, authentication, CAPTCHA, authorization, AIOps, incidents, and migrations | `.venv\Scripts\python.exe -m pytest -q` | All tests pass | 61 passed; one Starlette/httpx deprecation warning | Pass |
+| T-02 | Python compilation/lint and browser JavaScript syntax | `ruff check app tests`; `python -m compileall -q app tests`; `node --check app\static\login.js`; `node --check app\static\dashboard.js`; `git diff --check` | No lint, compilation, syntax, or whitespace errors | All checks passed | Pass |
+| T-03 | Compose configuration and security environment wiring | `docker compose config --quiet` with validation-only values for Grafana, CAPTCHA, and Secure cookies | Compose config parses and app variables are wired | Passed | Pass |
 | T-04 | Updated image and full local stack | Isolated `docker compose -p cloudnetops-secureverify up --build -d --wait --wait-timeout 240` | App and monitoring services start | Build and Compose wait completed successfully; six services were running, with app and Prometheus healthy | Pass |
 | T-05 | Monitoring readiness and scrape targets | `GET /health/ready`; Prometheus `/api/v1/targets` | Dependencies ready and targets available | Readiness was `ready`; 6 of 6 targets were `up` | Pass |
 | T-06 | Alertmanager config and webhook authentication | `amtool check-config`; post without/with bearer token | Config accepted; unauthenticated request rejected; authenticated request accepted | Config check succeeded; invalid token returned 401; valid token returned `{"received":1}` | Pass |
 | T-07 | Alertmanager-to-app delivery | Submit a synthetic test alert to isolated Alertmanager; query isolated SQLite history | Alert is delivered and persisted | The verification alert was present in the isolated app database after delivery | Pass |
 | T-08 | Login page rendering | Open the isolated app at `/login` in the integrated browser | Login form loads without dashboard access | Login page rendered; screenshot captured in the session | Pass |
 | T-09 | Runtime dependency audit | `pip-audit -r requirements.txt` | No known vulnerable runtime dependencies | No known vulnerabilities found | Pass |
+| T-10 | Capacity forecasts and regression checks | `.venv\Scripts\python.exe -m pytest -q`; Ruff; Python compilation; dashboard `node --check`; `docker compose config --quiet`; `git diff --check` | Forecast math, holdout comparison, stale/missing data, API grouping, warning gating/deduplication/authorization, and existing tests pass | 72 tests passed; Ruff, compilation, JavaScript syntax, Compose configuration, and diff checks passed | Pass |
 
 This is a local demonstration, not a production benchmark. No GCP resources
 were created. Live alert recovery, end-user flows across all roles, and
 performance on a native Linux host remain to be demonstrated separately.
+The capacity forecast tests use synthetic samples; no real Prometheus host
+forecast/backtest accuracy was measured in this test run.
 
 ## Evaluation limitations
 

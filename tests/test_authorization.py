@@ -32,7 +32,11 @@ def authenticated_client(role: str) -> Iterator[tuple[TestClient, int]]:
 
         response = client.post(
             "/api/auth/login",
-            json={"username": username, "password": "test-role-credential-2026"},
+            json={
+                "username": username,
+                "password": "test-role-credential-2026",
+                "captcha_token": "cloudnetops-local-captcha-test-token",
+            },
         )
         assert response.status_code == 200
         client.headers["X-CSRF-Token"] = response.json()["csrf_token"]
@@ -55,6 +59,7 @@ def test_viewer_can_read_monitoring_but_cannot_mutate_or_administer() -> None:
             "/api/v1/anomalies/scan",
             json={},
         ).status_code == 403
+        assert client.post("/api/aiops/forecasts/capacity/warnings").status_code == 403
         assert client.post(
             "/api/v1/anomalies/score",
             json={

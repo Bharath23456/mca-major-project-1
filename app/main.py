@@ -1,3 +1,4 @@
+import asyncio
 import hmac
 import json
 import math
@@ -24,7 +25,13 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.admin_routes import router as admin_router
-from app.aiops import build_diagnostics, build_historical_analysis, build_overview
+from app.aiops import (
+    build_diagnostic_report,
+    build_diagnostics,
+    build_historical_analysis,
+    build_overview,
+)
+from app.anomaly_detection.capacity import forecast_capacity
 from app.anomaly_detection.core import (
     FEATURES,
     Detection,
@@ -42,6 +49,7 @@ from app.auth import (
     user_session_for_token,
 )
 from app.auth_routes import router as auth_router
+from app.captcha import CaptchaUnavailable, public_captcha_config
 from app.configuration import validate_probe_targets
 from app.database import SessionLocal, engine, get_session
 from app.database_migrations import migrate_database
@@ -108,6 +116,22 @@ HISTORY_QUERIES = {
     "probe_duration_seconds": "probe_duration_seconds",
     "probe_success": "probe_success",
 }
+CAPACITY_FORECAST_QUERIES = {
+    "cpu_percent": (
+        '100 * (1 - avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])))'
+    ),
+    "memory_percent": (
+        "100 * (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)"
+    ),
+    "disk_percent": (
+        'max by(instance) (100 * (1 - node_filesystem_avail_bytes'
+        '{fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes'
+        '{fstype!~"tmpfs|overlay"}))'
+    ),
+}
+CAPACITY_FORECAST_LOOKBACK_HOURS = 24
+CAPACITY_FORECAST_HORIZON_HOURS = 6
+CAPACITY_FORECAST_STEP_SECONDS = 120
 
 
 class HealthResponse(BaseModel):
@@ -143,6 +167,23 @@ class AlertManagerPayload(BaseModel):
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    try:
+        public_captcha_config()
+    except CaptchaUnavailable as error:
+        raise RuntimeError(
+            "Configure CAPTCHA_MODE=test for local development or provide valid "
+            "reCAPTCHA settings before starting the application."
+        ) from error
+    if (
+        settings.incident_repeat_warning_count < 2
+        or settings.incident_repeat_critical_count
+        <= settings.incident_repeat_warning_count
+        or settings.incident_repeat_window_hours < 1
+    ):
+        raise RuntimeError(
+            "Incident repeat settings must use a warning count of at least 2, "
+            "a larger critical count, and a positive lookback window."
+        )
     migrate_database()
     yield
 
@@ -171,6 +212,7 @@ async def authenticate_request(request: Request, call_next):
         or path == "/login"
         or path == "/api/auth/login"
         or path == "/api/auth/register"
+        or path == "/api/auth/captcha-config"
         or path == "/api/v1/alerts/webhook"
     )
     request.state.user = None
@@ -308,10 +350,32 @@ def validate_configuration() -> dict[str, Any]:
     errors = list(endpoint_errors)
     if not prometheus_valid:
         errors.append("Prometheus URL must be an HTTP or HTTPS URL with a host.")
+    incident_repeat_settings_valid = (
+        settings.incident_repeat_warning_count >= 2
+        and settings.incident_repeat_critical_count
+        > settings.incident_repeat_warning_count
+        and settings.incident_repeat_window_hours >= 1
+    )
+    if not incident_repeat_settings_valid:
+        errors.append(
+            "Incident repeat settings must use a warning count of at least 2, "
+            "a larger critical count, and a positive lookback window."
+        )
     return {
         "valid": not invalid and not errors,
         "invalid_thresholds": invalid,
         "configured_thresholds_percent": thresholds,
+        "incident_repeat_rules": {
+            "warning_count": settings.incident_repeat_warning_count,
+            "critical_count": settings.incident_repeat_critical_count,
+            "window_hours": settings.incident_repeat_window_hours,
+            "valid": incident_repeat_settings_valid,
+        },
+        "capacity_forecasting": {
+            "lookback_hours": CAPACITY_FORECAST_LOOKBACK_HOURS,
+            "horizon_hours": CAPACITY_FORECAST_HORIZON_HOURS,
+            "proactive_warnings_enabled": settings.capacity_forecast_warnings_enabled,
+        },
         "endpoint_targets": {
             "valid": not endpoint_errors,
             "count": endpoint_count,
@@ -675,22 +739,42 @@ def aiops_correlations(
 
 @app.get("/api/aiops/diagnostics", tags=["AIOps"])
 async def aiops_diagnostics(session: Session = Depends(get_session)) -> dict[str, Any]:
-    monitoring = await monitoring_summary()
+    monitoring = None
+    try:
+        monitoring = await monitoring_summary()
+    except HTTPException as error:
+        if error.status_code != 503:
+            raise
     alerts = list_alerts(limit=500, offset=0, session=session)
     recent_anomalies = list_anomalies(limit=10, offset=0, session=session)
+    monitoring_data = monitoring or {}
     suggestions = build_diagnostics(
-        monitoring,
+        monitoring_data,
         alerts,
         recent_anomalies,
         cpu_threshold=settings.cpu_threshold_percent,
         memory_threshold=settings.memory_threshold_percent,
         disk_threshold=settings.disk_threshold_percent,
     )
+    report = build_diagnostic_report(
+        monitoring,
+        alerts,
+        recent_anomalies,
+        cpu_threshold=settings.cpu_threshold_percent,
+        memory_threshold=settings.memory_threshold_percent,
+        disk_threshold=settings.disk_threshold_percent,
+        window_seconds=settings.alert_correlation_window_seconds,
+    )
     return {
-        "status": "suggestions_available" if suggestions else "no_evidence",
+        "status": "suggestions_available" if suggestions else report["status"],
         "suggestions": suggestions,
-        "source": "Prometheus and stored application events",
-        "notice": "These are evidence-based diagnostic suggestions, not confirmed root causes.",
+        "report": report,
+        "source": (
+            "Prometheus and stored application events"
+            if monitoring is not None
+            else "Stored application events; Prometheus unavailable"
+        ),
+        "notice": report["notice"],
     }
 
 
@@ -835,6 +919,10 @@ async def receive_alertmanager_webhook(
 async def monitoring_summary() -> dict[str, Any]:
     queries = {
         **METRIC_QUERIES,
+        "cpu_percent_by_target": (
+            '100 * (1 - avg by (instance) '
+            '(rate(node_cpu_seconds_total{mode="idle"}[5m])))'
+        ),
         "probe_success": "probe_success",
         "probe_duration_seconds": "probe_duration_seconds",
         "probe_http_status_code": "probe_http_status_code",
@@ -882,6 +970,12 @@ async def monitoring_summary() -> dict[str, Any]:
     return {
         "collected_at": datetime.now(UTC).isoformat(),
         "metrics": metrics_data,
+        "diagnostic_metrics": {
+            "cpu_percent": [
+                _series_value(item, now, "percent")
+                for item in result_sets["cpu_percent_by_target"]
+            ]
+        },
         "endpoints": endpoints,
         "targets": targets,
         "source": "Prometheus",
@@ -1035,6 +1129,169 @@ async def monitoring_history(
     }
 
 
+async def _capacity_forecast_data() -> dict[str, Any]:
+    end = datetime.now(UTC).timestamp()
+    start = end - CAPACITY_FORECAST_LOOKBACK_HOURS * 3600
+    results = await asyncio.gather(
+        *(
+            prometheus_range_query(
+                expression,
+                start=start,
+                end=end,
+                step_seconds=CAPACITY_FORECAST_STEP_SECONDS,
+            )
+            for expression in CAPACITY_FORECAST_QUERIES.values()
+        )
+    )
+    thresholds = {
+        "cpu_percent": settings.cpu_threshold_percent,
+        "memory_percent": settings.memory_threshold_percent,
+        "disk_percent": settings.disk_threshold_percent,
+    }
+    forecasts = []
+    for (metric, _), metric_results in zip(
+        CAPACITY_FORECAST_QUERIES.items(), results, strict=True
+    ):
+        for series in metric_results:
+            timestamps: list[float] = []
+            values: list[float | None] = []
+            for sample in series.get("values", []):
+                if not isinstance(sample, (list, tuple)) or len(sample) != 2:
+                    continue
+                try:
+                    timestamps.append(float(sample[0]))
+                except (TypeError, ValueError):
+                    continue
+                try:
+                    values.append(float(sample[1]))
+                except (TypeError, ValueError):
+                    values.append(None)
+            labels = series.get("metric", {})
+            target = labels.get("instance") or labels.get("job") or "unknown"
+            forecast = forecast_capacity(
+                timestamps,
+                values,
+                horizon_hours=CAPACITY_FORECAST_HORIZON_HOURS,
+                now_timestamp=end,
+                warning_threshold_percent=thresholds[metric],
+            )
+            forecasts.append(
+                {
+                    "metric": metric,
+                    "target": target,
+                    "labels": labels,
+                    "unit": "percent",
+                    "forecast": forecast,
+                }
+            )
+    return {
+        "generated_at": datetime.fromtimestamp(end, UTC).isoformat(),
+        "lookback_hours": CAPACITY_FORECAST_LOOKBACK_HOURS,
+        "horizon_hours": CAPACITY_FORECAST_HORIZON_HOURS,
+        "warning_events_enabled": settings.capacity_forecast_warnings_enabled,
+        "series": forecasts,
+        "source": "Prometheus",
+        "model": "simple_linear_trend",
+    }
+
+
+@app.get("/api/aiops/forecasts/capacity", tags=["AIOps"])
+async def capacity_forecasts() -> dict[str, Any]:
+    try:
+        return await _capacity_forecast_data()
+    except PrometheusUnavailable as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@app.post(
+    "/api/aiops/forecasts/capacity/warnings",
+    tags=["AIOps"],
+    dependencies=[Depends(require_roles("ADMIN", "OPERATOR"))],
+)
+async def create_capacity_forecast_warnings(
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    if not settings.capacity_forecast_warnings_enabled:
+        raise HTTPException(
+            status_code=409,
+            detail="Proactive capacity warning events are disabled by configuration.",
+        )
+    try:
+        data = await _capacity_forecast_data()
+    except PrometheusUnavailable as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+    now = datetime.now(UTC)
+    cutoff = now - timedelta(hours=24)
+    created: list[AnomalyEvent] = []
+    duplicates = 0
+    for item in data["series"]:
+        forecast = item["forecast"]
+        current_value = forecast["current_value_percent"]
+        predicted_value = forecast["predicted_value_percent"]
+        threshold = forecast["warning_threshold_percent"]
+        if (
+            forecast["status"] != "forecast_available"
+            or current_value is None
+            or predicted_value is None
+            or current_value >= threshold
+            or predicted_value < threshold
+        ):
+            continue
+        metric = item["metric"]
+        target = item["target"]
+        duplicate = session.scalar(
+            select(AnomalyEvent.id)
+            .where(
+                AnomalyEvent.detector == "capacity_forecast",
+                AnomalyEvent.target == target,
+                AnomalyEvent.created_at >= cutoff,
+                AnomalyEvent.metrics_json.contains(f'"metric": "{metric}"'),
+            )
+            .limit(1)
+        )
+        if duplicate is not None:
+            duplicates += 1
+            continue
+        event = AnomalyEvent(
+            detector="capacity_forecast",
+            severity="warning",
+            score=None,
+            explanation=(
+                f"Forecast for {metric} on {target} reaches "
+                f"{predicted_value:.1f}% within {forecast['horizon_hours']} hours; "
+                f"configured warning threshold is {threshold:.1f}%."
+            ),
+            metrics_json=json.dumps(
+                {
+                    "metric": metric,
+                    "current_value_percent": current_value,
+                    "predicted_value_percent": predicted_value,
+                    "warning_threshold_percent": threshold,
+                    "trend_percent_per_hour": forecast["trend_percent_per_hour"],
+                    "horizon_hours": forecast["horizon_hours"],
+                    "model": "simple_linear_trend",
+                },
+                sort_keys=True,
+            ),
+            target=target,
+            model_status="available",
+        )
+        session.add(event)
+        created.append(event)
+
+    if created:
+        session.commit()
+        for event in created:
+            session.refresh(event)
+    return {
+        "created_count": len(created),
+        "event_ids": [event.id for event in created],
+        "duplicate_count": duplicates,
+        "warning_events_enabled": True,
+    }
+
+
 async def _query_many(queries: dict[str, str]) -> dict[str, list[dict[str, Any]]]:
     import asyncio
 
@@ -1046,7 +1303,13 @@ async def _query_many(queries: dict[str, str]) -> dict[str, list[dict[str, Any]]
 def _series_value(series: dict[str, Any], now: float, unit: str | None = None) -> dict[str, Any]:
     value = series.get("value", [])
     if len(value) != 2:
-        return {"value": None, "unit": unit, "timestamp": None, "stale": True}
+        return {
+            "value": None,
+            "unit": unit,
+            "timestamp": None,
+            "stale": True,
+            "labels": series.get("metric", {}),
+        }
     timestamp = float(value[0])
     age = max(0.0, now - timestamp)
     try:
@@ -1060,6 +1323,7 @@ def _series_value(series: dict[str, Any], now: float, unit: str | None = None) -
         "unit": unit,
         "timestamp": datetime.fromtimestamp(timestamp, UTC).isoformat(),
         "stale": age > 120 or numeric_value is None,
+        "labels": series.get("metric", {}),
     }
 
 

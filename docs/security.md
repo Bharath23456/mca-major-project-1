@@ -18,6 +18,15 @@
   SHA-256 digests and expire server-side; cookie-authenticated mutations check
   a session-bound CSRF token. Cookies use HttpOnly/SameSite=Strict settings.
 - Login failures are throttled by hashed account and client-address keys.
+- The login page uses Google reCAPTCHA v2 in configured mode and the backend
+  verifies each token with Google's siteverify endpoint before checking
+  credentials. The local `.env.example` explicitly selects a test-only mode
+  for loopback development; it must not be used on shared or public deployments.
+  Compose defaults to `recaptcha`, and application startup fails closed if its
+  keys are missing or the configured mode is invalid.
+- reCAPTCHA site and secret keys are supplied through environment variables.
+  Only the public site key is sent to the browser; CAPTCHA tokens and secrets
+  are omitted from audit records and application logs.
 - Public self-registration is separately throttled, validates the account
   fields, hashes passwords with Argon2id, and always assigns the read-only
   `VIEWER` role. Elevated roles remain administrator-managed.
@@ -51,9 +60,10 @@
   secret shared only with the app and Alertmanager services. On Linux, the
   setup files restrict it to root and the app/Alertmanager group (GID 10001).
   Do not forward `/api/v1/alerts/webhook` through an internet-facing proxy.
-- `SESSION_COOKIE_SECURE=false` supports local HTTP on loopback. Set it to
-  `true` behind HTTPS; do not expose the app over untrusted networks without
-  TLS and appropriate network controls.
+- `SESSION_COOKIE_SECURE=true` is the Compose/app default. The copied local
+  `.env.example` sets it to `false` for loopback HTTP; keep it `true` behind
+  HTTPS. Compose passes this variable through to the app. Do not expose the app
+  over untrusted networks without TLS and appropriate network controls.
 - Prometheus and Alertmanager have no login configured here. Keep their web
   interfaces private; access remote administration through a VPN, IAP, or SSH
   tunnel.
