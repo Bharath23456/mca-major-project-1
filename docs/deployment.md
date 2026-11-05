@@ -133,11 +133,13 @@ firewall rules to the services actually used.
 
 ## CI deployment and IAM
 
-CI checks are separate from deployment. If a manual GCP deployment workflow
-is configured, use GitHub Actions Workload Identity Federation rather than a
-long-lived JSON service-account key. Limit the trust condition to this
-repository and protected `main` branch, and require a protected GitHub
-Environment approval.
+The implemented automated workflow, its exact GitHub variables, GCP/IAM
+setup, Artifact Registry checks, IAP deployment, readiness verification, and
+rollback procedure are documented in
+[ci-cd-gcp.md](./ci-cd-gcp.md). It uses GitHub Actions Workload Identity
+Federation rather than a long-lived JSON service-account key. Review the
+existing provider condition before changing it; limit trust to this repository
+and production branch, and protect the GitHub `production` environment.
 
 For a workflow that connects to one VM over IAP and runs a deploy command, the
 service account generally needs only:

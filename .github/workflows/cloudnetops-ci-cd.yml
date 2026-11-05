@@ -1,0 +1,269 @@
+name: CloudNetOps-AI CI/CD
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloudnetops-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  validate:
+    name: Test, scan, and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      image_uri: ${{ steps.image-meta.outputs.image_uri }}
+    env:
+      LOCAL_IMAGE: cloudnetops-ai:${{ github.sha }}
+      DOCKER_PLATFORM: ${{ vars.DOCKER_PLATFORM || 'linux/amd64' }}
+      PRODUCTION_BRANCH: ${{ vars.PRODUCTION_BRANCH }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements-dev.txt
+
+      - name: Check formatting and common errors
+        run: ruff check app tests
+
+      - name: Audit Python dependencies
+        run: pip-audit -r requirements-dev.txt
+
+      - name: Run existing tests
+        run: python -m pytest -q
+
+      - name: Validate Compose model
+        run: |
+          cp .env.example .env
+          GRAFANA_ADMIN_PASSWORD=ci-only-config-validation-value docker compose config --quiet
+
+      - name: Validate Prometheus rules
+        run: |
+          docker run --rm \
+            --entrypoint=promtool \
+            -v "$PWD/monitoring/prometheus:/etc/prometheus:ro" \
+            prom/prometheus:v3.5.0 \
+            check config /etc/prometheus/prometheus.yml
+
+      - name: Validate Alertmanager configuration
+        run: |
+          docker run --rm \
+            --entrypoint=amtool \
+            -v "$PWD/monitoring/alertmanager:/etc/alertmanager:ro" \
+            prom/alertmanager:v0.28.1 \
+            check-config /etc/alertmanager/alertmanager.yml
+
+      - name: Validate JSON configuration
+        run: |
+          python -m json.tool monitoring/prometheus/blackbox_targets.json > /dev/null
+          python -m json.tool monitoring/grafana/dashboards/infrastructure.json > /dev/null
+
+      - name: Scan source tree with Trivy
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,misconfig,secret
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          skip-dirs: .git,.venv,.pytest_cache,.ruff_cache
+
+      - name: Build application image
+        run: docker build --platform "$DOCKER_PLATFORM" --tag "$LOCAL_IMAGE" .
+
+      - name: Scan application image with Trivy
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: image
+          image-ref: cloudnetops-ai:${{ github.sha }}
+          scanners: vuln,misconfig,secret
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Validate production branch configuration
+        if: github.event_name == 'push'
+        env:
+          PRODUCTION_BRANCH: ${{ vars.PRODUCTION_BRANCH }}
+        run: |
+          if [[ -z "$PRODUCTION_BRANCH" ]]; then
+            echo "::error::Set the PRODUCTION_BRANCH repository variable (currently expected to be main)."
+            exit 1
+          fi
+
+      - name: Validate production deployment configuration
+        if: github.event_name == 'push' && github.ref_name == vars.PRODUCTION_BRANCH
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          GCP_REGION: ${{ vars.GCP_REGION }}
+          ARTIFACT_REGISTRY_REPOSITORY: ${{ vars.ARTIFACT_REGISTRY_REPOSITORY }}
+          IMAGE_NAME: ${{ vars.IMAGE_NAME || 'cloudnetops-ai' }}
+          GCP_WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER }}
+          GCP_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          VM_NAME: ${{ vars.VM_NAME }}
+          VM_ZONE: ${{ vars.VM_ZONE }}
+          APP_DIRECTORY: ${{ vars.APP_DIRECTORY }}
+        run: |
+          set -euo pipefail
+
+          for name in \
+            GCP_PROJECT_ID GCP_REGION ARTIFACT_REGISTRY_REPOSITORY \
+            GCP_WIF_PROVIDER GCP_SERVICE_ACCOUNT VM_NAME VM_ZONE APP_DIRECTORY
+          do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::Set the $name repository variable before deploying."
+              exit 1
+            fi
+          done
+
+          if [[ ! "$GCP_PROJECT_ID" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]]; then
+            echo "::error::GCP_PROJECT_ID is not a valid project ID."
+            exit 1
+          fi
+          if [[ ! "$GCP_REGION" =~ ^[a-z0-9-]+$ ]]; then
+            echo "::error::GCP_REGION contains unsupported characters."
+            exit 1
+          fi
+          if [[ ! "$ARTIFACT_REGISTRY_REPOSITORY" =~ ^[a-z][a-z0-9_-]*$ ]]; then
+            echo "::error::ARTIFACT_REGISTRY_REPOSITORY must be a lowercase repository name."
+            exit 1
+          fi
+          if [[ ! "$IMAGE_NAME" =~ ^[a-z0-9][a-z0-9._-]*$ ]]; then
+            echo "::error::IMAGE_NAME must be a lowercase Docker image name."
+            exit 1
+          fi
+          if [[ ! "$VM_NAME" =~ ^[a-z]([-a-z0-9]*[a-z0-9])?$ ]]; then
+            echo "::error::VM_NAME contains unsupported characters."
+            exit 1
+          fi
+          if [[ ! "$VM_ZONE" =~ ^[a-z0-9-]+$ ]]; then
+            echo "::error::VM_ZONE contains unsupported characters."
+            exit 1
+          fi
+          if [[ ! "$APP_DIRECTORY" =~ ^/[A-Za-z0-9._/-]+$ ]]; then
+            echo "::error::APP_DIRECTORY must be an absolute path without spaces."
+            exit 1
+          fi
+
+      - name: Record production image URI
+        id: image-meta
+        if: github.event_name == 'push' && github.ref_name == vars.PRODUCTION_BRANCH
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          GCP_REGION: ${{ vars.GCP_REGION }}
+          ARTIFACT_REGISTRY_REPOSITORY: ${{ vars.ARTIFACT_REGISTRY_REPOSITORY }}
+          IMAGE_NAME: ${{ vars.IMAGE_NAME || 'cloudnetops-ai' }}
+        run: |
+          echo "image_uri=${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${ARTIFACT_REGISTRY_REPOSITORY}/${IMAGE_NAME}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Export scanned image for deployment
+        if: github.event_name == 'push' && github.ref_name == vars.PRODUCTION_BRANCH
+        run: docker save "$LOCAL_IMAGE" | gzip -1 > "$RUNNER_TEMP/cloudnetops-ai-image.tar.gz"
+
+      - name: Upload scanned image
+        if: github.event_name == 'push' && github.ref_name == vars.PRODUCTION_BRANCH
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloudnetops-ai-image-${{ github.sha }}
+          path: ${{ runner.temp }}/cloudnetops-ai-image.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+  deploy:
+    name: Publish and deploy to Compute Engine
+    if: github.event_name == 'push' && github.ref_name == vars.PRODUCTION_BRANCH
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_REGION: ${{ vars.GCP_REGION }}
+      GCP_WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER }}
+      GCP_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT }}
+      VM_NAME: ${{ vars.VM_NAME }}
+      VM_ZONE: ${{ vars.VM_ZONE }}
+      APP_DIRECTORY: ${{ vars.APP_DIRECTORY }}
+      LOCAL_IMAGE: cloudnetops-ai:${{ github.sha }}
+      IMAGE_URI: ${{ needs.validate.outputs.image_uri }}
+
+    steps:
+      - name: Check out deployment script
+        uses: actions/checkout@v4
+
+      - name: Download scanned application image
+        uses: actions/download-artifact@v4
+        with:
+          name: cloudnetops-ai-image-${{ github.sha }}
+          path: ${{ runner.temp }}/cloudnetops-ai-image
+
+      - name: Load scanned application image
+        run: docker load --input "$RUNNER_TEMP/cloudnetops-ai-image/cloudnetops-ai-image.tar.gz"
+
+      - name: Authenticate to Google Cloud with Workload Identity Federation
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+
+      - name: Set up Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Push the commit-SHA image to Artifact Registry
+        env:
+          GCP_REGION: ${{ vars.GCP_REGION }}
+        run: |
+          set -euo pipefail
+          gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
+          docker tag "$LOCAL_IMAGE" "$IMAGE_URI"
+          docker push "$IMAGE_URI"
+
+      - name: Copy deployment script to the VM
+        env:
+          VM_NAME: ${{ vars.VM_NAME }}
+          VM_ZONE: ${{ vars.VM_ZONE }}
+        run: |
+          set -euo pipefail
+          REMOTE_SCRIPT="/tmp/cloudnetops-deploy-${GITHUB_SHA}.sh"
+          gcloud compute scp scripts/deploy-gce.sh "$VM_NAME:$REMOTE_SCRIPT" \
+            --project="$GCP_PROJECT_ID" \
+            --zone="$VM_ZONE" \
+            --tunnel-through-iap \
+            --quiet
+
+      - name: Deploy and verify readiness on the VM
+        env:
+          VM_NAME: ${{ vars.VM_NAME }}
+          VM_ZONE: ${{ vars.VM_ZONE }}
+          APP_DIRECTORY: ${{ vars.APP_DIRECTORY }}
+          REGISTRY_HOST: ${{ vars.GCP_REGION }}-docker.pkg.dev
+        run: |
+          set -euo pipefail
+          REMOTE_SCRIPT="/tmp/cloudnetops-deploy-${GITHUB_SHA}.sh"
+          printf -v REMOTE_COMMAND 'bash %q %q %q %q %q' \
+            "$REMOTE_SCRIPT" "$APP_DIRECTORY" "$IMAGE_URI" "$REGISTRY_HOST" "$GITHUB_SHA"
+          gcloud compute ssh "$VM_NAME" \
+            --project="$GCP_PROJECT_ID" \
+            --zone="$VM_ZONE" \
+            --tunnel-through-iap \
+            --quiet \
+            --command="$REMOTE_COMMAND"
