@@ -1,0 +1,106 @@
+
+name: CloudNetOps-AI GCP Deployment
+
+on:
+  push:
+    branches:
+      - main
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: cloudnetops-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to Google Cloud VM
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # 1. Validate WIF configuration
+      - name: Validate authentication configuration
+        shell: bash
+        env:
+          WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER }}
+          SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "$WIF_PROVIDER" ]]; then
+            echo "ERROR: GCP_WIF_PROVIDER is missing."
+            exit 1
+          fi
+
+          if [[ -z "$SERVICE_ACCOUNT" ]]; then
+            echo "ERROR: GCP_SERVICE_ACCOUNT is missing."
+            exit 1
+          fi
+
+          echo "WIF configuration variables are present."
+
+      # 2. Authenticate using Workload Identity Federation
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      # 3. Install Google Cloud CLI
+      - name: Set up Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+
+      # 4. Verify Google Cloud authentication
+      - name: Verify Google Cloud authentication
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Checking authenticated Google Cloud account..."
+          gcloud auth list
+
+          echo "Setting Google Cloud project..."
+          gcloud config set project cloudnetops-ai-513607
+
+          echo "Google Cloud authentication completed."
+
+      # 5. Check Google Cloud VM
+      - name: Check Google Cloud VM
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Checking VM access..."
+
+          gcloud compute instances describe cloudnetops-ai \
+            --project=cloudnetops-ai-513607 \
+            --zone=asia-south1-a \
+            --format="value(name,status)"
+
+      
+      # 6. Identify GitHub Actions SSH identity
+      - name: Identify deployment SSH account
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PROJECT_ID="cloudnetops-ai-513607"
+          VM_NAME="cloudnetops-ai"
+          VM_ZONE="asia-south1-a"
+
+          echo "Checking GitHub Actions SSH identity..."
+
+          REMOTE_COMMAND='whoami; id; getent passwd "$(whoami)"'
+
+          gcloud compute ssh "$VM_NAME" \
+            --project="$PROJECT_ID" \
+            --zone="$VM_ZONE" \
+            --tunnel-through-iap \
+            --quiet \
+            --command="$REMOTE_COMMAND"

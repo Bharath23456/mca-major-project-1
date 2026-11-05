@@ -124,7 +124,6 @@ their data; use that only when you intentionally want a clean reset.
   provided, but no cloud resources are created or claimed as deployed.
 
 See [docs/architecture.md](docs/architecture.md),
-[docs/ci-cd-gcp.md](docs/ci-cd-gcp.md),
 [docs/grafana-setup.md](docs/grafana-setup.md),
 [docs/database.md](docs/database.md),
 [docs/api.md](docs/api.md), [docs/ml-design.md](docs/ml-design.md),

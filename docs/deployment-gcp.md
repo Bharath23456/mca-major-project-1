@@ -2,8 +2,7 @@
 
 Local Docker Compose is the primary reproducible project deployment. This
 guide is an entry point to the detailed, cost-aware instructions in
-[deployment.md](./deployment.md) and the implemented GitHub Actions pipeline
-in [ci-cd-gcp.md](./ci-cd-gcp.md).
+[deployment.md](./deployment.md).
 
 The optional example targets `asia-south1` and an existing secured VM. Before
 using it:
